@@ -1,0 +1,4 @@
+interface:
+  display_name: "PDF Translate"
+  short_description: "Offline BabelDOC PDF translation"
+  default_prompt: "Use $pdf-translate to translate a local PDF by calling advance, editing the returned clean translation file, and repeating until the translated PDF is complete."
