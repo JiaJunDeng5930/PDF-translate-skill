@@ -1,85 +1,55 @@
 ---
 name: pdf-translate
-description: [TODO: Complete and informative explanation of what the skill does and when to use it. Include WHEN to use this skill - specific scenarios, file types, or tasks that trigger it.]
+description: Use this skill to translate local academic or technical PDFs into Simplified Chinese with a file-backed offline BabelDOC workflow. It applies when a user asks to translate a PDF while preserving layout, formulas, figures, tables, links, metadata, and PDF structure, and when the AI should edit a clean current_translation.txt file instead of calling an online LLM API.
 ---
 
-# Pdf Translate
+# PDF Translate
 
-## Overview
+## Core Workflow
 
-[TODO: 1-2 sentences explaining what this skill enables]
+Run the bundled no-argument advance script from a workspace that contains exactly one source PDF:
 
-## Structuring This Skill
+```powershell
+python "<skill-dir>\scripts\advance.py"
+```
 
-[TODO: Choose the structure that best fits this skill's purpose. Common patterns:
+The script returns JSON. Follow the returned `status`:
 
-**1. Workflow-Based** (best for sequential processes)
-- Works well when there are clear step-by-step procedures
-- Example: DOCX skill with "Workflow Decision Tree" -> "Reading" -> "Creating" -> "Editing"
-- Structure: ## Overview -> ## Workflow Decision Tree -> ## Step 1 -> ## Step 2...
+- `needs_ai_edit`: open `editable_file`, fill every `⟦TRANSLATION⟧` section, save, then run advance again.
+- `needs_ai_fix`: correct the same file according to `validation_errors`, save, then run advance again.
+- `done`: deliver `output_pdf`.
+- `error`: inspect `validation_errors` and the trace tail.
 
-**2. Task-Based** (best for tool collections)
-- Works well when the skill offers different operations/capabilities
-- Example: PDF skill with "Quick Start" -> "Merge PDFs" -> "Split PDFs" -> "Extract Text"
-- Structure: ## Overview -> ## Quick Start -> ## Task Category 1 -> ## Task Category 2...
+The only AI-editable file is the returned `current_translation.txt`. Program-owned state lives under `.pdf_translate/`.
 
-**3. Reference/Guidelines** (best for standards or specifications)
-- Works well for brand guidelines, coding standards, or requirements
-- Example: Brand styling with "Brand Guidelines" -> "Colors" -> "Typography" -> "Features"
-- Structure: ## Overview -> ## Guidelines -> ## Specifications -> ## Usage...
+## Editable File Rules
 
-**4. Capabilities-Based** (best for integrated systems)
-- Works well when the skill provides multiple interrelated features
-- Example: Product Management with "Core Capabilities" -> numbered capability list
-- Structure: ## Overview -> ## Core Capabilities -> ### 1. Feature -> ### 2. Feature...
+Each block has this shape:
 
-Patterns can be mixed and matched as needed. Most skills combine patterns (e.g., start with task-based, add workflow for complex operations).
+```text
+⟦SOURCE⟧
+source text
+⟦TRANSLATION⟧
+translated text or term pairs
+⟦END⟧
+```
 
-Delete this entire "Structuring This Skill" section when done - it's just guidance.]
+Keep every source block unchanged. Fill translation blocks in order. Preserve protected markers such as `⟦FORMULA⟧`, `⟦INLINE_MATH⟧`, and `⟦PROTECTED_TEXT⟧` in the same order.
 
-## [TODO: Replace with the first main section based on chosen structure]
+For translation tasks, write only Simplified Chinese translation in each translation block.
 
-[TODO: Add content here. See examples in existing skills:
-- Code samples for technical skills
-- Decision trees for complex workflows
-- Concrete examples with realistic user requests
-- References to scripts/templates/references as needed]
+For term extraction tasks, write one term pair per line:
 
-## Resources (optional)
+```text
+source term → Chinese term
+```
 
-Create only the resource directories this skill actually needs. Delete this section if no resources are required.
+Write `[]` in a term extraction translation block when the source block has no terms.
 
-### scripts/
-Executable code (Python/Bash/etc.) that can be run directly to perform specific operations.
+## Runtime
 
-**Examples from other skills:**
-- PDF skill: `fill_fillable_fields.py`, `extract_form_field_info.py` - utilities for PDF manipulation
-- DOCX skill: `document.py`, `utilities.py` - Python modules for document processing
+The runtime uses the vendored modified BabelDOC engine under `scripts/babeldoc/`. BabelDOC handles PDF parsing, layout analysis, paragraph finding, formula/style protection, typesetting, font mapping, and PDF creation. The skill runtime handles `advance`, state, trace, clean editable files, answer validation, and replay of accepted AI answers.
 
-**Appropriate for:** Python scripts, shell scripts, or any executable code that performs automation, data processing, or specific operations.
+If Python imports fail, install the runtime dependencies from `scripts/requirements.txt` into the active environment, then rerun advance.
 
-**Note:** Scripts may be executed without loading into context, but can still be read by Codex for patching or environment adjustments.
-
-### references/
-Documentation and reference material intended to be loaded into context to inform Codex's process and thinking.
-
-**Examples from other skills:**
-- Product management: `communication.md`, `context_building.md` - detailed workflow guides
-- BigQuery: API reference documentation and query examples
-- Finance: Schema documentation, company policies
-
-**Appropriate for:** In-depth documentation, API references, database schemas, comprehensive guides, or any detailed information that Codex should reference while working.
-
-### assets/
-Files not intended to be loaded into context, but rather used within the output Codex produces.
-
-**Examples from other skills:**
-- Brand styling: PowerPoint template files (.pptx), logo files
-- Frontend builder: HTML/React boilerplate project directories
-- Typography: Font files (.ttf, .woff2)
-
-**Appropriate for:** Templates, boilerplate code, document templates, images, icons, fonts, or any files meant to be copied or used in the final output.
-
----
-
-**Not every skill requires all three types of resources.**
+Read `references/runtime.md` when changing the runtime behavior. Read `references/babeldoc-upstream.md` when updating the vendored BabelDOC source or license attribution.
