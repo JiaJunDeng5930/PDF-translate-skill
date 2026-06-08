@@ -89,7 +89,8 @@ def validate_pending(paths: WorkspacePaths, state: dict) -> ValidationResult:
         return ValidationResult(False, "needs_ai_fix", errors, warnings)
 
     archive_current_translation(paths, pending["task_hash"], accepted=True)
-    save_accepted_answer(paths, state, pending["task_hash"], answer)
+    summary = _build_answer_summary(pending, blocks, answer, warnings)
+    save_accepted_answer(paths, state, pending["task_hash"], answer, summary)
     return ValidationResult(True, "accepted", [], warnings)
 
 
@@ -113,6 +114,28 @@ def _validate_sources(pending: dict, blocks: list[EditableBlock]) -> list[str]:
         if block.source != snapshot["source"]:
             errors.append(f"source block {index} was modified")
     return errors
+
+
+def _build_answer_summary(
+    pending: dict,
+    blocks: list[EditableBlock],
+    answer,
+    warnings: list[str],
+) -> dict:
+    translations = [block.translation for block in blocks]
+    summary = {
+        "task_type": pending["task_type"],
+        "block_count": len(blocks),
+        "filled_translation_blocks": sum(1 for text in translations if text.strip()),
+        "translation_characters": sum(len(text) for text in translations),
+        "protected_marker_count": sum(
+            len(marker_sequence(text)) for text in translations
+        ),
+        "warning_count": len(warnings),
+    }
+    if pending["task_type"] == "term_extract":
+        summary["term_pair_count"] = len(answer or [])
+    return summary
 
 
 def _build_translation_answer(

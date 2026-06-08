@@ -173,14 +173,31 @@ def archive_current_translation(paths: WorkspacePaths, task_hash: str, accepted:
     shutil.copy2(paths.current_translation, target)
 
 
-def save_accepted_answer(paths: WorkspacePaths, state: dict, task_hash: str, answer):
+def save_accepted_answer(
+    paths: WorkspacePaths,
+    state: dict,
+    task_hash: str,
+    answer,
+    summary: dict | None = None,
+):
     answer_file = paths.accepted / f"{task_hash}.answer.json"
     write_json(answer_file, answer)
-    state["accepted"][task_hash] = {"answer_file": str(answer_file)}
+    answer_hash = stable_hash(answer)
+    state["accepted"][task_hash] = {
+        "answer_file": str(answer_file),
+        "answer_hash": answer_hash,
+        "summary": summary or {},
+    }
     state["pending"] = None
     state["status"] = "running"
     write_json(paths.state, state)
-    append_trace(paths, "answer_accepted", task_hash=task_hash)
+    append_trace(
+        paths,
+        "answer_accepted",
+        task_hash=task_hash,
+        answer_hash=answer_hash,
+        **(summary or {}),
+    )
 
 
 def load_accepted_answer(paths: WorkspacePaths, state: dict, task_hash: str):
