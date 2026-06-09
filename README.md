@@ -11,6 +11,7 @@ The example above uses page 4 of [arXiv:2602.19083v2](https://arxiv.org/abs/2602
 PDF Translate Skill gives coding agents a repeatable workflow for PDF translation:
 
 - Reads a workspace-level `pdf_translate.yaml` file.
+- Uses an explicit local runtime asset directory prepared before translation.
 - Runs a no-argument `advance.py` loop.
 - Pauses at translation tasks by writing `current_translation.txt`.
 - Lets the agent fill clean `SOURCE / TRANSLATION / END` blocks.
@@ -87,15 +88,23 @@ Install the runtime dependencies into the Python environment your agent will use
 python -m pip install -r pdf-translate/scripts/requirements.txt
 ```
 
+### Prepare runtime assets
+
+Download the PDF pipeline assets into a local directory:
+
+```bash
+python pdf-translate/scripts/download_assets.py ./pdf-translate-assets
+```
+
 ### Minimal translation workspace
 
 Create a folder containing your source PDF and `pdf_translate.yaml`:
 
 ```yaml
-version: 1
 input_pdf: "paper.pdf"
 lang_in: "en"
 lang_out: "zh-CN"
+asset_dir: "../pdf-translate-assets"
 pages: null
 output_mode: "mono"
 watermark_output_mode: "no_watermark"
@@ -116,30 +125,33 @@ When the result returns `needs_ai_edit` or `needs_ai_fix`, edit the returned `cu
 
 Typical agent workflow:
 
-1. Create `pdf_translate.yaml` in the PDF workspace.
-2. Run `advance.py` from that workspace.
-3. Fill every `TRANSLATION` block in `current_translation.txt`.
-4. Keep every `SOURCE` block unchanged.
-5. Preserve protected markers such as `⟦FORMULA⟧`, `⟦INLINE_MATH⟧`, and `⟦PROTECTED_TEXT⟧`.
-6. Run `advance.py` again.
-7. Use `output_pdf` or `output_pdfs` from the final JSON result.
+1. Prepare runtime assets with `download_assets.py`.
+2. Create `pdf_translate.yaml` in the PDF workspace.
+3. Run `advance.py` from that workspace.
+4. Fill every `TRANSLATION` block in `current_translation.txt`.
+5. Keep every `SOURCE` block unchanged.
+6. Preserve protected markers such as `⟦FORMULA⟧`, `⟦INLINE_MATH⟧`, and `⟦PROTECTED_TEXT⟧`.
+7. Run `advance.py` again.
+8. Use `output_pdf` or `output_pdfs` from the final JSON result.
 
 The runtime writes program-owned state under `.pdf_translate/`. Translation-stage editing is limited to `current_translation.txt`.
 
 ## Architecture
 
-The repository has four important layers:
+The repository has five important layers:
 
 - `pdf-translate/SKILL.md`: the agent-facing skill entrypoint.
 - `pdf-translate/scripts/advance.py`: the public no-argument runtime entrypoint.
+- `pdf-translate/scripts/download_assets.py`: explicit asset preparation entrypoint.
 - `pdf-translate/scripts/file_task_pdf_translate/`: config parsing, state, editable file rendering, validation, answer replay, and output reporting.
-- `pdf-translate/scripts/babeldoc/`: BabelDOC-derived internal PDF pipeline for parsing, layout analysis, formula/style handling, font mapping, typesetting, asset loading, and PDF generation.
+- `pdf-translate/scripts/babeldoc/`: BabelDOC-derived internal PDF pipeline for parsing, layout analysis, formula/style handling, font mapping, typesetting, local asset loading, and PDF generation.
 
 Runtime flow:
 
 ```text
 pdf_translate.yaml
   -> advance.py
+  -> validate local asset_dir
   -> freeze config into .pdf_translate/state.json
   -> run internal PDF pipeline
   -> pause at term/translation task
@@ -157,6 +169,7 @@ pdf_translate.yaml
 - Scanned/OCR-heavy PDFs may need pipeline options that are not currently exposed in `pdf_translate.yaml`.
 - Large PDFs can require many `advance.py` iterations.
 - Runtime dependencies are installed separately; they are not bundled in this repository.
+- Runtime assets are prepared separately with `download_assets.py`.
 
 ## Development
 
@@ -185,7 +198,7 @@ python -m unittest discover -s tests
 Run a syntax/import check:
 
 ```bash
-python -m compileall -q pdf-translate/scripts/file_task_pdf_translate pdf-translate/scripts/babeldoc
+python -m compileall -q pdf-translate/scripts/file_task_pdf_translate pdf-translate/scripts/babeldoc pdf-translate/scripts/download_assets.py
 ```
 
 Validate the skill layout with the Codex skill-creator quick validator when available:
@@ -194,7 +207,7 @@ Validate the skill layout with the Codex skill-creator quick validator when avai
 python ~/.codex/skills/.system/skill-creator/scripts/quick_validate.py pdf-translate
 ```
 
-There is no separate build step. The distributable artifact is the tracked source tree plus the runtime dependencies installed by the user.
+Release artifacts are the tracked source tree. Users install Python dependencies and prepare runtime assets with `download_assets.py`.
 
 For runtime changes, test with a real PDF containing text, formulas, figures, and tables. Render the source and translated pages side by side before accepting layout-sensitive changes.
 
@@ -203,7 +216,7 @@ For runtime changes, test with a real PDF containing text, formulas, figures, an
 Contributions should keep the public contract stable:
 
 - `pdf-translate/scripts/advance.py` remains the public no-argument entrypoint.
-- `pdf_translate.yaml` remains the preparation-stage config file.
+- `pdf_translate.yaml` remains the translation task config file.
 - `current_translation.txt` remains the only AI-editable file during translation tasks.
 - Program-owned state remains under `.pdf_translate/`.
 - BabelDOC-derived files that are modified must retain AGPL headers and prominent modification notices.

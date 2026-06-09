@@ -5,8 +5,10 @@ The public interface is `scripts/advance.py` with no arguments. The current work
 Preparation-stage config:
 
 - `pdf_translate.yaml`: AI-created workspace config before the first advance.
+- `asset_dir`: local runtime asset directory prepared by `scripts/download_assets.py`.
 - The first initialized state freezes the normalized config snapshot and `config_hash`.
 - Later config drift returns `config_error`.
+- Asset directory validation failures return `asset_error`.
 
 Translation-stage state:
 
@@ -34,4 +36,11 @@ Validation invariants:
 - Protected marker sequence must match the source block sequence.
 - Term extraction pairs must parse as `source ? target`, and the source term must occur in the matching source block.
 
-PDF generation is owned by the internal pipeline: `high_level.translate()` runs layout parsing, paragraph finding, styles/formulas, term extraction, IL translation, typesetting, font mapping, and PDF creation. Asset download and cache behavior comes from the BabelDOC-derived source.
+PDF generation is owned by the internal pipeline: `high_level.translate()` runs layout parsing, paragraph finding, styles/formulas, term extraction, IL translation, typesetting, font mapping, and PDF creation.
+
+Runtime assets are prepared outside translation:
+
+- `scripts/download_assets.py <asset-dir>` downloads the DocLayout ONNX model, fonts, CMap files, and tiktoken cache into the configured directory.
+- `manifest.json` records the expected asset names and SHA3-256 hashes.
+- `advance` activates the frozen `asset_dir`, validates `manifest.json` and every required file, then runs the PDF pipeline.
+- After `asset_dir` is active, the BabelDOC-derived asset loader reads local files and raises `AssetError` for missing or damaged assets.

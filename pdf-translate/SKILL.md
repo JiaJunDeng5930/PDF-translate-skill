@@ -7,15 +7,21 @@ description: Use this skill to translate local academic or technical PDFs with a
 
 ## Prepare
 
-Create `pdf_translate.yaml` in the PDF workspace before the first run. Include the source PDF, languages, output mode, watermark mode, and pipeline options. Read `references/config.md` for the full schema.
+Prepare runtime assets before translating:
+
+```text
+python "<skill-dir>\scripts\download_assets.py" "<asset-dir>"
+```
+
+Create `pdf_translate.yaml` in the PDF workspace before the first run. Include the source PDF, languages, asset directory, output mode, watermark mode, and pipeline options. Read `references/config.md` for the full schema.
 
 Minimal example:
 
 ```yaml
-version: 1
 input_pdf: "paper.pdf"
 lang_in: "en"
 lang_out: "zh-CN"
+asset_dir: "pdf-translate-assets"
 output_mode: "mono"
 watermark_output_mode: "watermarked"
 auto_extract_glossary: true
@@ -34,6 +40,7 @@ python "<skill-dir>\scripts\advance.py"
 Follow the returned `status`:
 
 - `config_error`: fix `pdf_translate.yaml`, then run advance again.
+- `asset_error`: prepare the configured `asset_dir` with `scripts/download_assets.py`, then run advance again.
 - `needs_ai_edit`: open `editable_file`, fill every `⟦TRANSLATION⟧` section, save, then run advance again.
 - `needs_ai_fix`: correct the same file according to `validation_errors`, save, then run advance again.
 - `done`: deliver `output_pdf` and use `output_pdfs` when multiple variants were generated.
@@ -69,7 +76,7 @@ Write `[]` in a term extraction translation block when the source block has no t
 
 The skill owns the workflow contract: `advance`, config freezing, state, trace, clean editable files, answer validation, accepted-answer replay, and output reporting.
 
-The code under `scripts/babeldoc/` is the internal PDF pipeline. It is derived from BabelDOC and handles PDF parsing, layout analysis, paragraph finding, formula/style protection, typesetting, font mapping, asset loading, and PDF creation.
+The code under `scripts/babeldoc/` is the internal PDF pipeline. It is derived from BabelDOC and handles PDF parsing, layout analysis, paragraph finding, formula/style protection, typesetting, font mapping, local asset loading, and PDF creation.
 
 If Python imports fail, install the runtime dependencies from `scripts/requirements.txt` into the active environment, then rerun advance.
 
