@@ -9,6 +9,8 @@ import sys
 import traceback
 from pathlib import Path
 
+from babeldoc.assets.assets import AssetError
+from babeldoc.assets.assets import set_runtime_asset_dir
 from babeldoc.file_task_bridge import FileTaskPending
 from babeldoc.format.pdf.high_level import translate
 from babeldoc.format.pdf.translation_config import TranslationConfig
@@ -40,10 +42,22 @@ def advance(workspace: Path | None = None) -> dict:
         except ConfigError as exc:
             return _config_error_response(paths, str(exc), None)
 
+        existing_state = read_json(paths.state, None)
+        if existing_state is None:
+            try:
+                set_runtime_asset_dir(workspace_config.snapshot["asset_dir"])
+            except AssetError as exc:
+                return _asset_error_response(paths, str(exc), None)
+
         state = load_or_init_state(paths, workspace_config.snapshot)
         drift_error = _config_drift_error(state, workspace_config.snapshot)
         if drift_error:
             return _config_error_response(paths, drift_error, state)
+        try:
+            asset_dir = set_runtime_asset_dir(state["config"]["asset_dir"])
+        except AssetError as exc:
+            return _asset_error_response(paths, str(exc), state)
+        append_trace(paths, "assets_ready", asset_dir=str(asset_dir))
 
         state["advance_count"] = int(state.get("advance_count", 0)) + 1
         write_json(paths.state, state)
@@ -192,6 +206,7 @@ def _progress(state: dict) -> dict:
         "pending_blocks": len((state.get("pending") or {}).get("blocks", [])),
         "input_pdf": state.get("input_pdf"),
         "config_hash": state.get("config_hash"),
+        "asset_dir": (state.get("config") or {}).get("asset_dir"),
     }
 
 
@@ -220,6 +235,28 @@ def _config_error_response(paths, error: str, state: dict | None) -> dict:
         "status": "config_error",
         "editable_file": None,
         "instruction": "Fix pdf_translate.yaml before running advance again.",
+        "progress": _progress(state or {}),
+        "validation_errors": [error],
+        "validation_warnings": [],
+        "trace_tail": trace_tail(paths),
+        "output_pdf": (state or {}).get("output_pdf"),
+        "output_pdfs": (state or {}).get("output_pdfs", {}),
+    }
+
+
+def _asset_error_response(paths, error: str, state: dict | None) -> dict:
+    if state is not None:
+        state["status"] = "asset_error"
+        state["last_error"] = error
+        write_json(paths.state, state)
+    append_trace(paths, "asset_error", error=error)
+    return {
+        "status": "asset_error",
+        "editable_file": None,
+        "instruction": (
+            "Prepare the configured asset_dir with scripts/download_assets.py, "
+            "then run advance again."
+        ),
         "progress": _progress(state or {}),
         "validation_errors": [error],
         "validation_warnings": [],
@@ -280,4 +317,5 @@ def main() -> int:
     )
     result = advance()
     print(json.dumps(result, ensure_ascii=False, indent=2))
-    return 0 if result.get("status") not in {"error", "config_error"} else 1
+    error_statuses = {"error", "config_error", "asset_error"}
+    return 0 if result.get("status") not in error_statuses else 1

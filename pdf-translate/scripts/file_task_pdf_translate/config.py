@@ -7,18 +7,15 @@ import hashlib
 import json
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-from babeldoc.format.pdf.translation_config import WatermarkOutputMode
+if TYPE_CHECKING:
+    from babeldoc.format.pdf.translation_config import WatermarkOutputMode
 
 
 CONFIG_FILE_NAME = "pdf_translate.yaml"
-CONFIG_VERSION = 1
 OUTPUT_MODES = {"mono", "dual", "both"}
-WATERMARK_MODES = {
-    "watermarked": WatermarkOutputMode.Watermarked,
-    "no_watermark": WatermarkOutputMode.NoWatermark,
-    "both": WatermarkOutputMode.Both,
-}
+WATERMARK_MODE_NAMES = {"watermarked", "no_watermark", "both"}
 PRIMARY_FONT_FAMILIES = {None, "serif", "sans-serif", "script"}
 
 
@@ -52,8 +49,15 @@ def load_workspace_config(root: Path) -> WorkspaceConfig:
     return WorkspaceConfig(path=config_path, snapshot=snapshot)
 
 
-def watermark_mode(value: str) -> WatermarkOutputMode:
-    return WATERMARK_MODES[value]
+def watermark_mode(value: str) -> "WatermarkOutputMode":
+    from babeldoc.format.pdf.translation_config import WatermarkOutputMode
+
+    modes = {
+        "watermarked": WatermarkOutputMode.Watermarked,
+        "no_watermark": WatermarkOutputMode.NoWatermark,
+        "both": WatermarkOutputMode.Both,
+    }
+    return modes[value]
 
 
 def output_flags(output_mode: str) -> tuple[bool, bool]:
@@ -94,9 +98,8 @@ def _load_yaml(path: Path):
 
 def _normalize_config(root: Path, data: dict) -> dict:
     errors: list[str] = []
-    version = data.get("version")
-    if version != CONFIG_VERSION:
-        errors.append("version must be 1")
+    if "version" in data:
+        errors.append("version is not a translation setting; remove version")
 
     input_pdf = data.get("input_pdf")
     if not input_pdf:
@@ -115,6 +118,14 @@ def _normalize_config(root: Path, data: dict) -> dict:
 
     lang_in = _required_string(data, "lang_in", errors)
     lang_out = _required_string(data, "lang_out", errors)
+    asset_dir_value = _required_string(data, "asset_dir", errors)
+    if asset_dir_value:
+        asset_dir = Path(asset_dir_value)
+        if not asset_dir.is_absolute():
+            asset_dir = root / asset_dir
+        asset_dir = asset_dir.resolve()
+    else:
+        asset_dir = None
 
     pages = data.get("pages")
     if pages is not None and not isinstance(pages, str):
@@ -125,7 +136,7 @@ def _normalize_config(root: Path, data: dict) -> dict:
         errors.append("output_mode must be one of: mono, dual, both")
 
     watermark_output_mode = data.get("watermark_output_mode", "watermarked")
-    if watermark_output_mode not in WATERMARK_MODES:
+    if watermark_output_mode not in WATERMARK_MODE_NAMES:
         errors.append(
             "watermark_output_mode must be one of: watermarked, no_watermark, both"
         )
@@ -146,10 +157,10 @@ def _normalize_config(root: Path, data: dict) -> dict:
         raise ConfigError("; ".join(errors))
 
     snapshot = {
-        "version": CONFIG_VERSION,
         "input_pdf": str(input_path),
         "lang_in": lang_in,
         "lang_out": lang_out,
+        "asset_dir": str(asset_dir),
         "pages": pages,
         "output_mode": output_mode,
         "watermark_output_mode": watermark_output_mode,

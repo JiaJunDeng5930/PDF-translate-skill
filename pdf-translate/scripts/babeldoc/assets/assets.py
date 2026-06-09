@@ -1,12 +1,23 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2024 funstory.ai limited
+# Copyright (C) 2026 JiajunDeng
+#
+# Derived from BabelDOC commit 980fd2821d54cbabd270349fe509e8177c35e4c3.
+# Modified on 2026-06-09 to support explicit local runtime asset directories
+# and a separate asset download preparation script for the pdf-translate skill.
+
+from __future__ import annotations
+
 import asyncio
 import hashlib
 import json
 import logging
+import os
 import threading
 import zipfile
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-import httpx
 from babeldoc.assets import embedding_assets_metadata
 from babeldoc.assets.embedding_assets_metadata import CMAP_METADATA
 from babeldoc.assets.embedding_assets_metadata import CMAP_URL_BY_UPSTREAM
@@ -18,10 +29,14 @@ from babeldoc.assets.embedding_assets_metadata import EMBEDDING_FONT_METADATA
 from babeldoc.assets.embedding_assets_metadata import FONT_METADATA_URL
 from babeldoc.assets.embedding_assets_metadata import FONT_URL_BY_UPSTREAM
 from babeldoc.assets.embedding_assets_metadata import TIKTOKEN_CACHES
+from babeldoc.const import TIKTOKEN_CACHE_FOLDER
 from babeldoc.const import get_cache_file_path
 from tenacity import retry
 from tenacity import stop_after_attempt
 from tenacity import wait_exponential
+
+if TYPE_CHECKING:
+    import httpx
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +44,29 @@ logger = logging.getLogger(__name__)
 _FASTEST_FONT_UPSTREAM_LOCK = asyncio.Lock()
 _FASTEST_FONT_UPSTREAM: str | None = None
 _FASTEST_FONT_METADATA: dict | None = None
+_RUNTIME_ASSET_DIR: Path | None = None
+ASSET_MANIFEST_NAME = "manifest.json"
+ASSET_GROUPS = ("models", "fonts", "cmap", "tiktoken")
+
+
+class AssetError(RuntimeError):
+    pass
+
+
+def _load_httpx():
+    try:
+        import httpx
+    except ImportError as exc:
+        raise AssetError("httpx is required to download runtime assets") from exc
+    return httpx
+
+
+def _network_error_types() -> tuple[type[BaseException], ...]:
+    try:
+        import httpx
+    except ImportError:
+        return (ConnectionError, ValueError, TimeoutError)
+    return (httpx.HTTPError, ConnectionError, ValueError, TimeoutError)
 
 
 class ResultContainer:
@@ -77,9 +115,7 @@ def _retry_if_not_cancelled_and_failed(retry_state):
             logger.debug("Operation was cancelled, not retrying")
             return False
         # Retry on network related errors
-        if isinstance(
-            exception, httpx.HTTPError | ConnectionError | ValueError | TimeoutError
-        ):
+        if isinstance(exception, _network_error_types()):
             logger.warning(f"Network error occurred: {exception}, will retry")
             return True
     # Don't retry on success
@@ -99,6 +135,84 @@ def verify_file(path: Path, sha3_256: str):
     return hash_.hexdigest() == sha3_256
 
 
+def _asset_path(file_type: str, filename: str) -> Path:
+    if _RUNTIME_ASSET_DIR is not None:
+        return _RUNTIME_ASSET_DIR / file_type / filename
+    return get_cache_file_path(filename, file_type)
+
+
+def _require_runtime_asset(file_type: str, filename: str, sha3_256: str) -> Path:
+    path = _asset_path(file_type, filename)
+    if verify_file(path, sha3_256):
+        return path
+    raise AssetError(f"asset file missing or hash mismatch: {path}")
+
+
+def _normalize_manifest(manifest: dict) -> dict:
+    normalized: dict[str, list[dict[str, str]]] = {}
+    for group in ASSET_GROUPS:
+        items = manifest.get(group)
+        if not isinstance(items, list):
+            raise AssetError(f"asset manifest must contain a {group} list")
+        normalized[group] = sorted(
+            (
+                {
+                    "name": str(item.get("name")),
+                    "sha3_256": str(item.get("sha3_256")),
+                }
+                for item in items
+                if isinstance(item, dict)
+            ),
+            key=lambda item: item["name"],
+        )
+        if len(normalized[group]) != len(items):
+            raise AssetError(f"asset manifest has invalid entries in {group}")
+    return normalized
+
+
+def validate_runtime_asset_dir(asset_dir: str | Path) -> Path:
+    root = Path(asset_dir).expanduser().resolve()
+    if not root.is_dir():
+        raise AssetError(f"asset_dir does not exist or is not a directory: {root}")
+
+    manifest_path = root / ASSET_MANIFEST_NAME
+    if not manifest_path.is_file():
+        raise AssetError(f"asset manifest is required: {manifest_path}")
+
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        raise AssetError(f"cannot read asset manifest: {exc}") from exc
+    if not isinstance(manifest, dict):
+        raise AssetError("asset manifest must contain a mapping")
+
+    expected = _normalize_manifest(generate_all_assets_file_list())
+    current = _normalize_manifest(manifest)
+    if current != expected:
+        raise AssetError("asset manifest does not match the expected asset list")
+
+    for group, items in expected.items():
+        for item in items:
+            path = root / group / item["name"]
+            if not verify_file(path, item["sha3_256"]):
+                raise AssetError(f"asset file missing or hash mismatch: {path}")
+    return root
+
+
+def set_runtime_asset_dir(asset_dir: str | Path) -> Path:
+    global _RUNTIME_ASSET_DIR
+    root = validate_runtime_asset_dir(asset_dir)
+    _RUNTIME_ASSET_DIR = root
+    os.environ["TIKTOKEN_CACHE_DIR"] = str(root / "tiktoken")
+    return root
+
+
+def clear_runtime_asset_dir() -> None:
+    global _RUNTIME_ASSET_DIR
+    _RUNTIME_ASSET_DIR = None
+    os.environ["TIKTOKEN_CACHE_DIR"] = str(TIKTOKEN_CACHE_FOLDER)
+
+
 @retry(
     retry=_retry_if_not_cancelled_and_failed,
     stop=stop_after_attempt(3),
@@ -114,8 +228,10 @@ async def download_file(
     path: Path = None,
     sha3_256: str = None,
 ):
+    httpx_module = _load_httpx()
+    path.parent.mkdir(parents=True, exist_ok=True)
     if client is None:
-        async with httpx.AsyncClient() as client:
+        async with httpx_module.AsyncClient() as client:
             response = await client.get(url, follow_redirects=True)
     else:
         response = await client.get(url, follow_redirects=True)
@@ -140,12 +256,13 @@ async def download_file(
 async def get_font_metadata(
     client: httpx.AsyncClient | None = None, upstream: str = None
 ):
+    httpx_module = _load_httpx()
     if upstream not in FONT_METADATA_URL:
         logger.critical(f"Invalid upstream: {upstream}")
         exit(1)
 
     if client is None:
-        async with httpx.AsyncClient() as client:
+        async with httpx_module.AsyncClient() as client:
             response = await client.get(
                 FONT_METADATA_URL[upstream], follow_redirects=True
             )
@@ -233,8 +350,14 @@ async def get_fastest_upstream(client: httpx.AsyncClient | None = None):
 
 
 async def get_doclayout_onnx_model_path_async(client: httpx.AsyncClient | None = None):
+    model_name = "doclayout_yolo_docstructbench_imgsz1024.onnx"
+    if _RUNTIME_ASSET_DIR is not None:
+        return _require_runtime_asset(
+            "models", model_name, DOCLAYOUT_YOLO_DOCSTRUCTBENCH_IMGSZ1024ONNX_SHA3_256
+        )
+
     onnx_path = get_cache_file_path(
-        "doclayout_yolo_docstructbench_imgsz1024.onnx", "models"
+        model_name, "models"
     )
     if verify_file(onnx_path, DOCLAYOUT_YOLO_DOCSTRUCTBENCH_IMGSZ1024ONNX_SHA3_256):
         return onnx_path
@@ -285,6 +408,17 @@ async def get_font_and_metadata_async(
     fastest_upstream: str | None = None,
     font_metadata: dict | None = None,
 ):
+    if _RUNTIME_ASSET_DIR is not None:
+        if font_file_name not in EMBEDDING_FONT_METADATA:
+            raise AssetError(f"font asset is not listed: {font_file_name}")
+        metadata = EMBEDDING_FONT_METADATA[font_file_name]
+        return (
+            _require_runtime_asset(
+                "fonts", font_file_name, metadata["sha3_256"]
+            ),
+            metadata,
+        )
+
     cache_file_path = get_cache_file_path(font_file_name, "fonts")
     if font_file_name in EMBEDDING_FONT_METADATA and verify_file(
         cache_file_path, EMBEDDING_FONT_METADATA[font_file_name]["sha3_256"]
@@ -336,6 +470,9 @@ async def get_cmap_file_path_async(
         exit(1)
 
     meta = CMAP_METADATA[file_name]
+    if _RUNTIME_ASSET_DIR is not None:
+        return _require_runtime_asset("cmap", file_name, meta["sha3_256"])
+
     cache_file_path = get_cache_file_path(file_name, "cmap")
     if verify_file(cache_file_path, meta["sha3_256"]):
         return cache_file_path
@@ -451,7 +588,8 @@ async def async_warmup():
     from tiktoken import encoding_for_model
 
     _ = encoding_for_model("gpt-4o")
-    async with httpx.AsyncClient() as client:
+    httpx_module = _load_httpx()
+    async with httpx_module.AsyncClient() as client:
         onnx_task = asyncio.create_task(get_doclayout_onnx_model_path_async(client))
         font_tasks = asyncio.create_task(download_all_fonts_async(client))
         cmap_tasks = asyncio.create_task(download_all_cmaps_async(client))
@@ -496,6 +634,110 @@ def generate_all_assets_file_list():
         },
     )
     return result
+
+
+def _write_asset_manifest(asset_dir: Path) -> None:
+    manifest = generate_all_assets_file_list()
+    (asset_dir / ASSET_MANIFEST_NAME).write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+
+
+def _prepare_tiktoken_assets(asset_dir: Path) -> None:
+    tiktoken_dir = asset_dir / "tiktoken"
+    tiktoken_dir.mkdir(parents=True, exist_ok=True)
+    os.environ["TIKTOKEN_CACHE_DIR"] = str(tiktoken_dir)
+
+    from tiktoken import encoding_for_model
+
+    _ = encoding_for_model("gpt-4o")
+    for file_name, sha3_256 in TIKTOKEN_CACHES.items():
+        path = tiktoken_dir / file_name
+        if not verify_file(path, sha3_256):
+            raise AssetError(f"tiktoken asset missing or hash mismatch: {path}")
+
+
+async def _download_doclayout_model_to(
+    asset_dir: Path, client: httpx.AsyncClient
+) -> None:
+    file_name = "doclayout_yolo_docstructbench_imgsz1024.onnx"
+    target = asset_dir / "models" / file_name
+    sha3_256 = DOCLAYOUT_YOLO_DOCSTRUCTBENCH_IMGSZ1024ONNX_SHA3_256
+    if verify_file(target, sha3_256):
+        return
+
+    fastest_upstream, _ = await get_fastest_upstream_for_model(client)
+    if fastest_upstream is None:
+        raise AssetError("failed to choose a model asset upstream")
+    await download_file(
+        client,
+        DOC_LAYOUT_ONNX_MODEL_URL[fastest_upstream],
+        target,
+        sha3_256,
+    )
+
+
+async def _download_fonts_to(asset_dir: Path, client: httpx.AsyncClient) -> None:
+    fastest_upstream, _ = await get_fastest_upstream_for_font(client)
+    if fastest_upstream is None:
+        raise AssetError("failed to choose a font asset upstream")
+
+    tasks = []
+    for file_name, metadata in EMBEDDING_FONT_METADATA.items():
+        target = asset_dir / "fonts" / file_name
+        sha3_256 = metadata["sha3_256"]
+        if verify_file(target, sha3_256):
+            continue
+        url = get_font_url_by_name_and_upstream(file_name, fastest_upstream)
+        tasks.append(
+            asyncio.create_task(download_file(client, url, target, sha3_256))
+        )
+    if tasks:
+        await asyncio.gather(*tasks)
+
+
+async def _download_cmaps_to(asset_dir: Path, client: httpx.AsyncClient) -> None:
+    fastest_upstream, _ = await get_fastest_upstream_for_font(client)
+    if fastest_upstream is None:
+        raise AssetError("failed to choose a CMap asset upstream")
+    if fastest_upstream not in CMAP_URL_BY_UPSTREAM:
+        raise AssetError(f"invalid CMap asset upstream: {fastest_upstream}")
+
+    tasks = []
+    for file_name, metadata in CMAP_METADATA.items():
+        target = asset_dir / "cmap" / file_name
+        sha3_256 = metadata["sha3_256"]
+        if verify_file(target, sha3_256):
+            continue
+        url = CMAP_URL_BY_UPSTREAM[fastest_upstream](file_name)
+        tasks.append(
+            asyncio.create_task(download_file(client, url, target, sha3_256))
+        )
+    if tasks:
+        await asyncio.gather(*tasks)
+
+
+async def download_runtime_assets_async(output_directory: Path) -> Path:
+    asset_dir = Path(output_directory).expanduser().resolve()
+    for group in ASSET_GROUPS:
+        (asset_dir / group).mkdir(parents=True, exist_ok=True)
+
+    httpx_module = _load_httpx()
+    async with httpx_module.AsyncClient() as client:
+        await asyncio.gather(
+            _download_doclayout_model_to(asset_dir, client),
+            _download_fonts_to(asset_dir, client),
+            _download_cmaps_to(asset_dir, client),
+        )
+    _prepare_tiktoken_assets(asset_dir)
+    _write_asset_manifest(asset_dir)
+    return validate_runtime_asset_dir(asset_dir)
+
+
+def download_runtime_assets(output_directory: Path) -> Path:
+    return run_coro(download_runtime_assets_async(output_directory))
 
 
 async def generate_offline_assets_package_async(output_directory: Path | None = None):
