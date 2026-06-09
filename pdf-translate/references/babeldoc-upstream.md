@@ -5,6 +5,7 @@ This skill owns the PDF translation workflow. The code under `scripts/babeldoc/`
 - Upstream: https://github.com/funstory-ai/BabelDOC
 - Upstream commit used for this copy: `980fd2821d54cbabd270349fe509e8177c35e4c3`
 - Upstream license: AGPL-3.0
+- Project license: AGPL-3.0-or-later
 - License copy: `assets/BABELDOC_LICENSE.txt`
 
 Pipeline scope:
