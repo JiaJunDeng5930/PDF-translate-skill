@@ -9,9 +9,8 @@ from dataclasses import dataclass
 
 from .editable import EditableBlock
 from .editable import marker_sequence
-from .editable import parse_blocks
-from .editable import parse_term_translation
-from .editable import render_blocks
+from .editable import parse_editable_document
+from .editable import render_editable_document
 from .editable import restore_internal_placeholders
 from .state import WorkspacePaths
 from .state import append_trace
@@ -44,7 +43,7 @@ def validate_pending(paths: WorkspacePaths, state: dict) -> ValidationResult:
         )
 
     text = paths.current_translation.read_text(encoding="utf-8")
-    blocks, parse_errors = parse_blocks(text)
+    document, parse_errors = parse_editable_document(text)
     if parse_errors:
         archive_current_translation(paths, pending["task_hash"], accepted=False)
         _restore_from_snapshot(paths, pending)
@@ -58,6 +57,25 @@ def validate_pending(paths: WorkspacePaths, state: dict) -> ValidationResult:
             errors=parse_errors,
         )
         return ValidationResult(False, "needs_ai_fix", parse_errors, [])
+
+    assert document is not None
+    blocks = document.items
+    if document.task != pending["task_type"]:
+        errors = [
+            f"editable task is {document.task}, expected {pending['task_type']}",
+        ]
+        archive_current_translation(paths, pending["task_hash"], accepted=False)
+        _restore_from_snapshot(paths, pending)
+        state["status"] = "needs_ai_fix"
+        write_json(paths.state, state)
+        append_trace(
+            paths,
+            "answer_rejected",
+            task_hash=pending["task_hash"],
+            reason="task_mismatch",
+            errors=errors,
+        )
+        return ValidationResult(False, "needs_ai_fix", errors, [])
 
     errors = _validate_sources(pending, blocks)
     if errors:
@@ -104,7 +122,14 @@ def _restore_from_snapshot(paths: WorkspacePaths, pending: dict) -> None:
         EditableBlock(source=block["source"], translation="")
         for block in pending["blocks"]
     ]
-    atomic_write_text(paths.current_translation, render_blocks(blocks))
+    atomic_write_text(
+        paths.current_translation,
+        render_editable_document(
+            pending["task_type"],
+            blocks,
+            pending.get("lang_out"),
+        ),
+    )
 
 
 def _validate_sources(pending: dict, blocks: list[EditableBlock]) -> list[str]:
@@ -187,14 +212,11 @@ def _build_term_answer(
         zip(blocks, pending["blocks"]),
         start=1,
     ):
-        if not block.translation.strip():
-            errors.append(f"term extraction block {index} is empty; write [] if none")
-            continue
-        pairs, parse_errors = parse_term_translation(block.translation)
-        errors.extend(f"block {index}: {error}" for error in parse_errors)
         source_text = snapshot["source"]
         original_source = snapshot.get("original_source", source_text)
-        for source, target in pairs:
+        for pair in block.terms:
+            source = pair.source
+            target = pair.target
             if len(source) >= 100:
                 errors.append(f"block {index}: source term is too long: {source[:80]}")
                 continue

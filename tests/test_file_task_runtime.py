@@ -252,44 +252,91 @@ class OutputSelectionTests(unittest.TestCase):
 
 
 class EditableParserRegressionTests(unittest.TestCase):
-    def test_empty_multi_block_translation_sections_remain_distinct_blocks(self) -> None:
-        from file_task_pdf_translate.editable import END_MARKER
-        from file_task_pdf_translate.editable import SOURCE_MARKER
-        from file_task_pdf_translate.editable import TRANSLATION_MARKER
-        from file_task_pdf_translate.editable import parse_blocks
+    def test_empty_multi_item_translation_yaml_remains_distinct_items(self) -> None:
+        from file_task_pdf_translate.editable import EditableBlock
+        from file_task_pdf_translate.editable import parse_editable_document
+        from file_task_pdf_translate.editable import render_editable_document
 
-        text = "\n".join(
+        text = render_editable_document(
+            "translate",
             [
-                SOURCE_MARKER,
-                "alpha",
-                TRANSLATION_MARKER,
-                END_MARKER,
-                SOURCE_MARKER,
-                "beta",
-                TRANSLATION_MARKER,
-                END_MARKER,
-                "",
+                EditableBlock(source="alpha"),
+                EditableBlock(source="beta"),
             ],
+            "zh-CN",
         )
 
-        blocks, errors = parse_blocks(text)
+        document, errors = parse_editable_document(text)
 
         self.assertEqual(errors, [])
-        self.assertEqual([block.source for block in blocks], ["alpha", "beta"])
-        self.assertEqual([block.translation for block in blocks], ["", ""])
+        self.assertIsNotNone(document)
+        assert document is not None
+        self.assertEqual(document.task, "translate")
+        self.assertEqual([block.source for block in document.items], ["alpha", "beta"])
+        self.assertEqual([block.translation for block in document.items], ["", ""])
+        self.assertNotIn("[[", text)
+        self.assertNotIn("⟦", text)
 
-    def test_term_parser_accepts_prompted_and_stable_separators(self) -> None:
-        from file_task_pdf_translate.editable import parse_term_translation
+    def test_term_yaml_uses_structured_pairs(self) -> None:
+        from file_task_pdf_translate.editable import parse_editable_document
 
-        pairs, errors = parse_term_translation(
-            "snow ? 雪\nsource field -> 源场\nfall: 秋天"
+        document, errors = parse_editable_document(
+            """
+task: term_extract
+target_language: zh-CN
+items:
+  - id: 1
+    source: weather labels
+    terms:
+      - source: snow
+        target: snow-target
+      - source: fall
+        target: fall-target
+""".lstrip()
         )
 
         self.assertEqual(errors, [])
+        self.assertIsNotNone(document)
+        assert document is not None
         self.assertEqual(
-            pairs,
-            [("snow", "雪"), ("source field", "源场"), ("fall", "秋天")],
+            [(pair.source, pair.target) for pair in document.items[0].terms],
+            [("snow", "snow-target"), ("fall", "fall-target")],
         )
+
+    def test_legacy_term_separator_string_is_rejected(self) -> None:
+        from file_task_pdf_translate.editable import parse_editable_document
+
+        document, errors = parse_editable_document(
+            """
+task: term_extract
+items:
+  - id: 1
+    source: snow
+    terms: snow -> snow-target
+""".lstrip()
+        )
+
+        self.assertIsNone(document)
+        self.assertEqual(errors, ["item 1: terms must be a YAML list"])
+
+    def test_protected_tokens_are_plain_text_yaml_values(self) -> None:
+        from file_task_pdf_translate.editable import marker_sequence
+        from file_task_pdf_translate.editable import replace_internal_placeholders
+        from file_task_pdf_translate.editable import restore_internal_placeholders
+
+        display, token_map = replace_internal_placeholders(
+            "Use <b0> and <b1>.",
+            {"<b0>"},
+        )
+
+        self.assertEqual(display, "Use FORMULA_1 and PROTECTED_1.")
+        self.assertEqual(marker_sequence(display), ["FORMULA_1", "PROTECTED_1"])
+        self.assertEqual(
+            restore_internal_placeholders(display, token_map),
+            "Use <b0> and <b1>.",
+        )
+        self.assertNotIn("[[", display)
+        self.assertNotIn("⟦", display)
 
 
 class TermValidationRegressionTests(unittest.TestCase):
@@ -299,7 +346,8 @@ class TermValidationRegressionTests(unittest.TestCase):
 
     def test_term_source_matching_normalizes_pdf_hyphenation(self) -> None:
         from file_task_pdf_translate.editable import EditableBlock
-        from file_task_pdf_translate.editable import render_blocks
+        from file_task_pdf_translate.editable import TermPair
+        from file_task_pdf_translate.editable import render_editable_document
         from file_task_pdf_translate.state import ensure_dirs
         from file_task_pdf_translate.state import paths_for
         from file_task_pdf_translate.state import read_json
@@ -331,16 +379,24 @@ class TermValidationRegressionTests(unittest.TestCase):
         }
         write_json(paths.state, state)
         paths.current_translation.write_text(
-            render_blocks(
+            render_editable_document(
+                "term_extract",
                 [
                     EditableBlock(
                         source=source,
-                        translation=(
-                            "source and target distributions -> 源分布和目标分布\n"
-                            "real-time editing -> 实时编辑"
-                        ),
+                        terms=[
+                            TermPair(
+                                source="source and target distributions",
+                                target="source-target distribution",
+                            ),
+                            TermPair(
+                                source="real-time editing",
+                                target="realtime editing",
+                            ),
+                        ],
                     )
-                ]
+                ],
+                "zh-CN",
             ),
             encoding="utf-8",
         )
@@ -352,10 +408,80 @@ class TermValidationRegressionTests(unittest.TestCase):
         self.assertEqual(
             answer,
             [
-                {"src": "source and target distributions", "tgt": "源分布和目标分布"},
-                {"src": "real-time editing", "tgt": "实时编辑"},
+                {
+                    "src": "source and target distributions",
+                    "tgt": "source-target distribution",
+                },
+                {"src": "real-time editing", "tgt": "realtime editing"},
             ],
         )
+
+
+class EditableYamlWorkflowTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp(prefix="pdf-translate-yaml-workflow-test-"))
+        self.addCleanup(lambda: shutil.rmtree(self.tmp, ignore_errors=True))
+
+    def test_translation_pending_writes_yaml_and_accepts_yaml_answer(self) -> None:
+        from babeldoc.file_task_bridge import FileTaskPending
+        from file_task_pdf_translate.editable import EditableBlock
+        from file_task_pdf_translate.editable import parse_editable_document
+        from file_task_pdf_translate.editable import render_editable_document
+        from file_task_pdf_translate.state import ensure_dirs
+        from file_task_pdf_translate.state import paths_for
+        from file_task_pdf_translate.state import read_json
+        from file_task_pdf_translate.state import write_json
+        from file_task_pdf_translate.translator import FileTaskTranslator
+        from file_task_pdf_translate.validation import validate_pending
+
+        paths = paths_for(self.tmp)
+        ensure_dirs(paths)
+        state = {
+            "config": {
+                "lang_in": "en",
+                "lang_out": "zh-CN",
+            },
+            "accepted": {},
+            "pending": None,
+            "status": "initialized",
+        }
+        write_json(paths.state, state)
+        translator = FileTaskTranslator(paths, state)
+
+        with self.assertRaises(FileTaskPending):
+            translator.do_translate("hello world")
+
+        self.assertEqual(paths.current_translation.name, "current_translation.yaml")
+        self.assertTrue(paths.current_translation.exists())
+        self.assertFalse((self.tmp / "current_translation.txt").exists())
+        document, errors = parse_editable_document(
+            paths.current_translation.read_text(encoding="utf-8")
+        )
+        self.assertEqual(errors, [])
+        self.assertIsNotNone(document)
+        assert document is not None
+        self.assertEqual(document.task, "translate")
+        self.assertEqual(document.items[0].source, "hello world")
+
+        state = read_json(paths.state, None)
+        paths.current_translation.write_text(
+            render_editable_document(
+                "translate",
+                [EditableBlock(source="hello world", translation="你好，世界")],
+                "zh-CN",
+            ),
+            encoding="utf-8",
+        )
+
+        task_hash = state["pending"]["task_hash"]
+        result = validate_pending(paths, state)
+
+        self.assertTrue(result.accepted)
+        accepted = read_json(
+            paths.accepted / f"{task_hash}.answer.json",
+            None,
+        )
+        self.assertEqual(accepted, [{"id": 0, "output": "你好，世界"}])
 
 
 class TranslationSelectionRegressionTests(unittest.TestCase):

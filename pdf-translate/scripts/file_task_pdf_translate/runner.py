@@ -181,18 +181,18 @@ def _instruction_for_pending(
     target_language = pending.get("lang_out") or state["config"]["lang_out"]
     if task_type == "term_extract":
         body = (
-            "Fill each TRANSLATION block with term pairs from the matching SOURCE "
-            f"block, one pair per line as `source term -> {target_language} term`. "
-            "Write `[]` when a source block has no terms."
+            f"Edit current_translation.yaml. For each item, write terms as YAML "
+            f"list entries with source and target fields. Use {target_language} "
+            "for target. Keep terms as [] when an item has no terms."
         )
     elif task_type == "translate":
         body = (
-            f"Fill every TRANSLATION block with translation into {target_language} "
-            "for the matching SOURCE block. Keep SOURCE blocks unchanged. Keep every "
-            "protected marker in the same order."
+            f"Edit current_translation.yaml. Fill each item's translation field "
+            f"with {target_language} text. Keep source fields unchanged and keep "
+            "every protected token in the same order."
         )
     else:
-        body = "Fill the TRANSLATION blocks in current_translation.txt."
+        body = "Edit current_translation.yaml."
     if validation.errors:
         return body + " Resolve validation_errors and run advance again."
     return body + " Save the file and run advance again."

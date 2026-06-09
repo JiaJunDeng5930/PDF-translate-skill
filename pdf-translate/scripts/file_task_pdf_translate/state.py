@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Iterator
 
 from .editable import EditableBlock
-from .editable import render_blocks
+from .editable import render_editable_document
 
 STATE_VERSION = 1
 
@@ -43,7 +43,7 @@ def paths_for(root: Path) -> WorkspacePaths:
         state=private / "state.json",
         trace=private / "trace.jsonl",
         config=root / "pdf_translate.yaml",
-        current_translation=root / "current_translation.txt",
+        current_translation=root / "current_translation.yaml",
         tasks=private / "tasks",
         accepted=private / "accepted_answers",
         rejected=private / "rejected_answers",
@@ -157,7 +157,14 @@ def save_pending_task(
     state["pending"] = snapshot
     state["status"] = "needs_ai_edit"
     write_json(paths.tasks / f"{task_hash}.snapshot.json", snapshot)
-    atomic_write_text(paths.current_translation, render_blocks(blocks))
+    atomic_write_text(
+        paths.current_translation,
+        render_editable_document(
+            snapshot["task_type"],
+            blocks,
+            snapshot.get("lang_out"),
+        ),
+    )
     write_json(paths.state, state)
     append_trace(
         paths,
@@ -173,7 +180,7 @@ def archive_current_translation(paths: WorkspacePaths, task_hash: str, accepted:
         return
     target_dir = paths.accepted if accepted else paths.rejected
     suffix = "accepted" if accepted else "rejected"
-    target = target_dir / f"{task_hash}.{suffix}.txt"
+    target = target_dir / f"{task_hash}.{suffix}.yaml"
     shutil.copy2(paths.current_translation, target)
 
 
