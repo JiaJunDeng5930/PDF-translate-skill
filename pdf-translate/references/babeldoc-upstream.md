@@ -7,6 +7,7 @@ This skill owns the PDF translation workflow. The code under `scripts/babeldoc/`
 - Upstream license: AGPL-3.0
 - Project license: AGPL-3.0-or-later
 - License copy: `assets/BABELDOC_LICENSE.txt`
+- Third-party notices: `../../THIRD_PARTY_LICENSES.md`
 
 Pipeline scope:
 

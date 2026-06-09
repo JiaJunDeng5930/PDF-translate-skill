@@ -1,3 +1,11 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2024 funstory.ai limited
+# Copyright (C) 2026 JiajunDeng
+#
+# Derived from BabelDOC commit 980fd2821d54cbabd270349fe509e8177c35e4c3.
+# Modified on 2026-06-09 to propagate file-backed AI task pauses through
+# the pdf-translate skill advance loop.
+
 import asyncio
 import copy
 import hashlib
