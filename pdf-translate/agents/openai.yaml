@@ -1,4 +1,4 @@
 interface:
   display_name: "PDF Translate"
-  short_description: "Offline BabelDOC PDF translation"
-  default_prompt: "Use $pdf-translate to translate a local PDF by calling advance, editing the returned clean translation file, and repeating until the translated PDF is complete."
+  short_description: "File-backed BabelDOC PDF translation"
+  default_prompt: "Use $pdf-translate to prepare pdf_translate.yaml, translate a local PDF by calling advance, edit the returned clean translation file, and repeat until the translated PDF is complete."
