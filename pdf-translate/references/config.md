@@ -23,7 +23,9 @@ Fields:
 - `lang_in`: source language code or name.
 - `lang_out`: target language code or name.
 - `asset_dir`: prepared runtime asset directory. Relative paths resolve from the workspace root. Create it with `scripts/download_assets.py` before translating.
-- `pages`: optional pages expression, such as `"1-3,8"`.
+- `pages`: optional pages expression, such as `"1-3,8"`. It selects pages to
+  translate. The output PDF keeps the source document page count; pages outside
+  the range are preserved from the source PDF.
 - `output_mode`: `mono`, `dual`, or `both`.
 - `watermark_output_mode`: `watermarked`, `no_watermark`, or `both`.
 - `auto_extract_glossary`: enables the LLM glossary pre-pass.

@@ -34,7 +34,9 @@ Validation invariants:
 - Source block count, order, and content must match the saved snapshot.
 - Translation tasks require every translation block to be non-empty.
 - Protected marker sequence must match the source block sequence.
-- Term extraction pairs must parse as `source ? target`, and the source term must occur in the matching source block.
+- Term extraction pairs must parse as `source -> target`. The validator also
+  accepts legacy separators such as `→`, `=>`, tab, colon, and ` ? `. Source
+  term matching normalizes PDF line-break hyphenation and abnormal whitespace.
 
 PDF generation is owned by the internal pipeline: `high_level.translate()` runs layout parsing, paragraph finding, styles/formulas, term extraction, IL translation, typesetting, font mapping, and PDF creation.
 

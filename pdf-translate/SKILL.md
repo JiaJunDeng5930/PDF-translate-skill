@@ -67,10 +67,12 @@ For translation tasks, write the translation in the configured `lang_out`.
 For term extraction tasks, write one term pair per line:
 
 ```text
-source term ? target-language term
+source term -> target-language term
 ```
 
 Write `[]` in a term extraction translation block when the source block has no terms.
+Source terms are matched against normalized PDF text, so normal words may omit
+PDF line-break hyphenation such as `distribu- tions` and `real- time`.
 
 ## Runtime
 

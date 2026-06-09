@@ -136,6 +136,10 @@ Typical agent workflow:
 
 The runtime writes program-owned state under `.pdf_translate/`. Translation-stage editing is limited to `current_translation.txt`.
 
+`pages` selects which pages are translated. The generated PDF keeps the source
+document page count, and pages outside the selected range are preserved from the
+source PDF.
+
 ## Architecture
 
 The repository has five important layers:
