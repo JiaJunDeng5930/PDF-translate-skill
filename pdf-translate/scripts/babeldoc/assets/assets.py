@@ -231,7 +231,7 @@ async def download_file(
     httpx_module = _load_httpx()
     path.parent.mkdir(parents=True, exist_ok=True)
     if client is None:
-        async with httpx_module.AsyncClient() as client:
+        async with httpx_module.AsyncClient(timeout=60.0) as client:
             response = await client.get(url, follow_redirects=True)
     else:
         response = await client.get(url, follow_redirects=True)
@@ -262,7 +262,7 @@ async def get_font_metadata(
         exit(1)
 
     if client is None:
-        async with httpx_module.AsyncClient() as client:
+        async with httpx_module.AsyncClient(timeout=60.0) as client:
             response = await client.get(
                 FONT_METADATA_URL[upstream], follow_redirects=True
             )
@@ -679,31 +679,18 @@ async def _download_doclayout_model_to(
     )
 
 
-async def _run_limited_downloads(coros, limit: int = 8) -> None:
-    semaphore = asyncio.Semaphore(limit)
-
-    async def run_one(coro):
-        async with semaphore:
-            return await coro
-
-    await asyncio.gather(*(run_one(coro) for coro in coros))
-
-
 async def _download_fonts_to(asset_dir: Path, client: httpx.AsyncClient) -> None:
     fastest_upstream, _ = await get_fastest_upstream_for_font(client)
     if fastest_upstream is None:
         raise AssetError("failed to choose a font asset upstream")
 
-    downloads = []
     for file_name, metadata in EMBEDDING_FONT_METADATA.items():
         target = asset_dir / "fonts" / file_name
         sha3_256 = metadata["sha3_256"]
         if verify_file(target, sha3_256):
             continue
         url = get_font_url_by_name_and_upstream(file_name, fastest_upstream)
-        downloads.append(download_file(client, url, target, sha3_256))
-    if downloads:
-        await _run_limited_downloads(downloads)
+        await download_file(client, url, target, sha3_256)
 
 
 async def _download_cmaps_to(asset_dir: Path, client: httpx.AsyncClient) -> None:
@@ -713,16 +700,13 @@ async def _download_cmaps_to(asset_dir: Path, client: httpx.AsyncClient) -> None
     if fastest_upstream not in CMAP_URL_BY_UPSTREAM:
         raise AssetError(f"invalid CMap asset upstream: {fastest_upstream}")
 
-    downloads = []
     for file_name, metadata in CMAP_METADATA.items():
         target = asset_dir / "cmap" / file_name
         sha3_256 = metadata["sha3_256"]
         if verify_file(target, sha3_256):
             continue
         url = CMAP_URL_BY_UPSTREAM[fastest_upstream](file_name)
-        downloads.append(download_file(client, url, target, sha3_256))
-    if downloads:
-        await _run_limited_downloads(downloads)
+        await download_file(client, url, target, sha3_256)
 
 
 async def download_runtime_assets_async(output_directory: Path) -> Path:
@@ -731,12 +715,10 @@ async def download_runtime_assets_async(output_directory: Path) -> Path:
         (asset_dir / group).mkdir(parents=True, exist_ok=True)
 
     httpx_module = _load_httpx()
-    async with httpx_module.AsyncClient() as client:
-        await asyncio.gather(
-            _download_doclayout_model_to(asset_dir, client),
-            _download_fonts_to(asset_dir, client),
-            _download_cmaps_to(asset_dir, client),
-        )
+    async with httpx_module.AsyncClient(timeout=60.0) as client:
+        await _download_doclayout_model_to(asset_dir, client)
+        await _download_fonts_to(asset_dir, client)
+        await _download_cmaps_to(asset_dir, client)
     _prepare_tiktoken_assets(asset_dir)
     _write_asset_manifest(asset_dir)
     return validate_runtime_asset_dir(asset_dir)
