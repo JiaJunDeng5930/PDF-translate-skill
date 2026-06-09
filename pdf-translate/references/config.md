@@ -21,14 +21,14 @@ Fields:
 
 - `version`: must be `1`.
 - `input_pdf`: source PDF path. Relative paths resolve from the workspace root.
-- `lang_in`: BabelDOC source language code or name.
-- `lang_out`: BabelDOC target language code or name.
-- `pages`: optional BabelDOC pages expression, such as `"1-3,8"`.
+- `lang_in`: source language code or name.
+- `lang_out`: target language code or name.
+- `pages`: optional pages expression, such as `"1-3,8"`.
 - `output_mode`: `mono`, `dual`, or `both`.
 - `watermark_output_mode`: `watermarked`, `no_watermark`, or `both`.
-- `auto_extract_glossary`: enables BabelDOC LLM glossary pre-pass.
+- `auto_extract_glossary`: enables the LLM glossary pre-pass.
 - `primary_font_family`: `null`, `serif`, `sans-serif`, or `script`.
-- `add_formula_placehold_hint`: asks BabelDOC to include formula placeholder hints in translation prompts.
+- `add_formula_placehold_hint`: asks the pipeline to include formula placeholder hints in translation prompts.
 
 ## State Rule
 

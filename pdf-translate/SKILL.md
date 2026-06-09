@@ -1,13 +1,13 @@
 ---
 name: pdf-translate
-description: Use this skill to translate local academic or technical PDFs with a file-backed BabelDOC task workflow. It applies when a user asks to translate a PDF while preserving layout, formulas, figures, tables, metadata, and PDF structure, and when Codex should prepare a PDF translation config before running an advance loop that edits only current_translation.txt.
+description: Use this skill to translate local academic or technical PDFs with a file-backed advance loop. It applies when a user asks to translate a PDF while preserving layout, formulas, figures, tables, metadata, and PDF structure, and when Codex should prepare a PDF translation config before running an advance loop that edits only current_translation.txt.
 ---
 
 # PDF Translate
 
 ## Prepare
 
-Create `pdf_translate.yaml` in the PDF workspace before the first run. Include the source PDF, languages, output mode, watermark mode, and BabelDOC options. Read `references/config.md` for the full schema.
+Create `pdf_translate.yaml` in the PDF workspace before the first run. Include the source PDF, languages, output mode, watermark mode, and pipeline options. Read `references/config.md` for the full schema.
 
 Minimal example:
 
@@ -67,8 +67,10 @@ Write `[]` in a term extraction translation block when the source block has no t
 
 ## Runtime
 
-The runtime uses the vendored modified BabelDOC engine under `scripts/babeldoc/`. BabelDOC handles PDF parsing, layout analysis, paragraph finding, formula/style protection, typesetting, font mapping, and PDF creation. The skill runtime handles `advance`, config freezing, state, trace, clean editable files, answer validation, and replay of accepted AI answers.
+The skill owns the workflow contract: `advance`, config freezing, state, trace, clean editable files, answer validation, accepted-answer replay, and output reporting.
+
+The code under `scripts/babeldoc/` is the internal PDF pipeline. It is derived from BabelDOC and handles PDF parsing, layout analysis, paragraph finding, formula/style protection, typesetting, font mapping, asset loading, and PDF creation.
 
 If Python imports fail, install the runtime dependencies from `scripts/requirements.txt` into the active environment, then rerun advance.
 
-Read `references/runtime.md` when changing runtime behavior. Read `references/babeldoc-upstream.md` when updating the vendored BabelDOC source or license attribution.
+Read `references/runtime.md` when changing runtime behavior. Read `references/babeldoc-upstream.md` when changing the BabelDOC-derived pipeline source or license attribution.

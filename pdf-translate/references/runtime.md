@@ -13,13 +13,13 @@ Translation-stage state:
 - `current_translation.txt`: the only AI-editable file while a task is pending.
 - `.pdf_translate/state.json`: frozen config, pending task, accepted answer index, final outputs.
 - `.pdf_translate/tasks/`: snapshots for pending tasks.
-- `.pdf_translate/accepted_answers/`: accepted editable files and JSON answers replayed into BabelDOC.
+- `.pdf_translate/accepted_answers/`: accepted editable files and JSON answers replayed into the internal PDF pipeline.
 - `.pdf_translate/rejected_answers/`: damaged editable files archived before template restoration.
 - `.pdf_translate/trace.jsonl`: compact config, progress, validation, answer, and output events.
 
-The runtime re-enters BabelDOC from the beginning on each advance and replays accepted answers by stable task hash. This keeps the workflow resumable while keeping checkpoints program-owned.
+The runtime re-enters the internal PDF pipeline from the beginning on each advance and replays accepted answers by stable task hash. This keeps the workflow resumable while keeping checkpoints program-owned.
 
-The modified BabelDOC files are:
+The BabelDOC-derived pipeline files with file-task changes are:
 
 - `babeldoc/file_task_bridge.py`: pending exception and immediate executor.
 - `babeldoc/format/pdf/document_il/midend/automatic_term_extractor.py`: file-task sequential term extraction and pending propagation.
@@ -34,4 +34,4 @@ Validation invariants:
 - Protected marker sequence must match the source block sequence.
 - Term extraction pairs must parse as `source ? target`, and the source term must occur in the matching source block.
 
-PDF generation remains BabelDOC-owned: `high_level.translate()` runs layout parsing, paragraph finding, styles/formulas, term extraction, IL translation, typesetting, font mapping, and PDF creation. BabelDOC asset download and cache behavior remains upstream behavior.
+PDF generation is owned by the internal pipeline: `high_level.translate()` runs layout parsing, paragraph finding, styles/formulas, term extraction, IL translation, typesetting, font mapping, and PDF creation. Asset download and cache behavior comes from the BabelDOC-derived source.
