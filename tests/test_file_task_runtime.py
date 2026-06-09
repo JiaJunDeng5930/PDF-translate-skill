@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -276,6 +277,152 @@ class EditableParserRegressionTests(unittest.TestCase):
         self.assertEqual(errors, [])
         self.assertEqual([block.source for block in blocks], ["alpha", "beta"])
         self.assertEqual([block.translation for block in blocks], ["", ""])
+
+    def test_term_parser_accepts_prompted_and_stable_separators(self) -> None:
+        from file_task_pdf_translate.editable import parse_term_translation
+
+        pairs, errors = parse_term_translation(
+            "snow ? 雪\nsource field -> 源场\nfall: 秋天"
+        )
+
+        self.assertEqual(errors, [])
+        self.assertEqual(
+            pairs,
+            [("snow", "雪"), ("source field", "源场"), ("fall", "秋天")],
+        )
+
+
+class TermValidationRegressionTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp(prefix="pdf-translate-term-test-"))
+        self.addCleanup(lambda: shutil.rmtree(self.tmp, ignore_errors=True))
+
+    def test_term_source_matching_normalizes_pdf_hyphenation(self) -> None:
+        from file_task_pdf_translate.editable import EditableBlock
+        from file_task_pdf_translate.editable import render_blocks
+        from file_task_pdf_translate.state import ensure_dirs
+        from file_task_pdf_translate.state import paths_for
+        from file_task_pdf_translate.state import read_json
+        from file_task_pdf_translate.state import write_json
+        from file_task_pdf_translate.validation import validate_pending
+
+        paths = paths_for(self.tmp)
+        ensure_dirs(paths)
+        source = (
+            "We recast editing as a transport problem between the source and "
+            "target distribu- tions. ChordEdit achieves true real- time editing."
+        )
+        pending = {
+            "task_type": "term_extract",
+            "task_hash": "terms-normalized",
+            "blocks": [
+                {
+                    "source": source,
+                    "original_source": source,
+                    "token_map": [],
+                    "required_markers": [],
+                }
+            ],
+        }
+        state = {
+            "pending": pending,
+            "status": "needs_ai_edit",
+            "accepted": {},
+        }
+        write_json(paths.state, state)
+        paths.current_translation.write_text(
+            render_blocks(
+                [
+                    EditableBlock(
+                        source=source,
+                        translation=(
+                            "source and target distributions -> 源分布和目标分布\n"
+                            "real-time editing -> 实时编辑"
+                        ),
+                    )
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        result = validate_pending(paths, state)
+
+        self.assertTrue(result.accepted)
+        answer = read_json(paths.accepted / "terms-normalized.answer.json", None)
+        self.assertEqual(
+            answer,
+            [
+                {"src": "source and target distributions", "tgt": "源分布和目标分布"},
+                {"src": "real-time editing", "tgt": "实时编辑"},
+            ],
+        )
+
+
+class TranslationSelectionRegressionTests(unittest.TestCase):
+    def test_file_task_translation_keeps_short_visible_labels(self) -> None:
+        from babeldoc.format.pdf.document_il.midend import il_translator_llm_only
+
+        translator = object.__new__(il_translator_llm_only.ILTranslatorLLMOnly)
+        translator.translation_config = SimpleNamespace(
+            min_text_length=5,
+            file_task_workflow=True,
+        )
+        paragraph = SimpleNamespace(
+            debug_id="p1",
+            unicode="fox",
+            pdf_paragraph_composition=[],
+            layout_label="plain text",
+        )
+
+        with patch.object(
+            il_translator_llm_only,
+            "is_cid_paragraph",
+            return_value=False,
+        ), patch.object(
+            il_translator_llm_only,
+            "is_placeholder_only_paragraph",
+            return_value=False,
+        ):
+            self.assertFalse(translator._is_below_translation_length(paragraph))
+            self.assertTrue(translator._should_translate_paragraph(paragraph))
+
+
+class PdfCompatibilityRegressionTests(unittest.TestCase):
+    def test_type3_charproc_metrics_move_before_leading_save(self) -> None:
+        from babeldoc.format.pdf.babelpdf.type3 import (
+            _normalize_type3_charproc_stream,
+        )
+
+        normalized = _normalize_type3_charproc_stream(
+            b"q\n0 0 500 700 0 0 d1\n0 0 m 10 10 l S\nQ\n"
+        )
+
+        self.assertEqual(
+            normalized,
+            b"0 0 500 700 0 0 d1\nq\n0 0 m 10 10 l S\nQ\n",
+        )
+
+
+class ProcessExitRegressionTests(unittest.TestCase):
+    def test_priority_executor_import_does_not_block_process_exit(self) -> None:
+        code = f"""
+import sys
+from concurrent.futures import ThreadPoolExecutor
+sys.path.insert(0, {str(SCRIPTS_DIR)!r})
+import babeldoc.utils.priority_thread_pool_executor
+with ThreadPoolExecutor(max_workers=1) as executor:
+    print(executor.submit(lambda: 1).result())
+"""
+
+        completed = subprocess.run(
+            [sys.executable, "-c", code],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+
+        self.assertEqual(completed.stdout.strip(), "1")
 
 
 if __name__ == "__main__":

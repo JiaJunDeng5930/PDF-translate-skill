@@ -342,7 +342,7 @@ class ILTranslatorLLMOnly:
             return False
 
         # Minimum length check
-        if len(paragraph.unicode) < self.translation_config.min_text_length:
+        if self._is_below_translation_length(paragraph):
             return False
 
         # Body text check if requested
@@ -374,6 +374,11 @@ class ILTranslatorLLMOnly:
                 paragraph, translated_ids, require_body_text
             )
         ]
+
+    def _is_below_translation_length(self, paragraph: PdfParagraph) -> bool:
+        if is_file_task_workflow(self.translation_config):
+            return False
+        return len(paragraph.unicode) < self.translation_config.min_text_length
 
     def _build_font_maps(
         self, page: Page
@@ -605,7 +610,7 @@ class ILTranslatorLLMOnly:
                 continue
 
             # Check minimum length - advance progress bar if filtered out
-            if len(paragraph.unicode) < self.translation_config.min_text_length:
+            if self._is_below_translation_length(paragraph):
                 if pbar:
                     pbar.advance(1)
                 continue

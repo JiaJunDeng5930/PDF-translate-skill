@@ -41,6 +41,7 @@ from babeldoc.format.pdf.document_il.utils.paragraph_helper import (
 from babeldoc.format.pdf.document_il.utils.style_helper import GRAY80
 from babeldoc.format.pdf.translation_config import TitleContextSnapshot
 from babeldoc.format.pdf.translation_config import TranslationConfig
+from babeldoc.file_task_bridge import is_file_task_workflow
 from babeldoc.translator.translator import BaseTranslator
 from babeldoc.utils.priority_thread_pool_executor import PriorityThreadPoolExecutor
 
@@ -981,7 +982,10 @@ class ILTranslator:
             getattr(translate_input, "original_placeholder_tokens", None),
         )
         text = translate_input.unicode
-        if len(text) < self.translation_config.min_text_length:
+        if (
+            len(text) < self.translation_config.min_text_length
+            and not is_file_task_workflow(self.translation_config)
+        ):
             logger.debug(
                 f"Text too short to translate, skip. Text: {text}. Paragraph id: {paragraph.debug_id}."
             )

@@ -37,6 +37,7 @@ from babeldoc.format.pdf.document_il.backend.pdf_creater import SAVE_PDF_STAGE_N
 from babeldoc.format.pdf.document_il.backend.pdf_creater import SUBSET_FONT_STAGE_NAME
 from babeldoc.format.pdf.document_il.backend.pdf_creater import PDFCreater
 from babeldoc.format.pdf.document_il.backend.pdf_creater import reproduce_cmap
+from babeldoc.format.pdf.babelpdf.type3 import sanitize_type3_charproc_metrics
 from babeldoc.format.pdf.document_il.midend.add_debug_information import (
     AddDebugInformation,
 )
@@ -238,6 +239,13 @@ def fix_cmap(translate_result: TranslateResult, translate_config: TranslationCon
         temp_path = translate_config.get_working_file_path(f"{path.stem}.cmap.pdf")
         pdf = pymupdf.open(path)
         reproduce_cmap(pdf)
+        fixed_type3_streams = sanitize_type3_charproc_metrics(pdf)
+        if fixed_type3_streams:
+            logger.info(
+                "fixed %s Type 3 CharProc metric streams in %s",
+                fixed_type3_streams,
+                path,
+            )
         safe_save(pdf, temp_path)
         shutil.move(temp_path, path)
 

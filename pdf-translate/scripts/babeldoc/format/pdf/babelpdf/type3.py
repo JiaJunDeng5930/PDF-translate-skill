@@ -6,6 +6,31 @@ from dataclasses import dataclass
 import pymupdf
 
 _PDF_NUMBER_RE = re.compile(r"[+-]?(?:(?:\d+\.\d*)|(?:\.\d+)|(?:\d+))(?:[eE][+-]?\d+)?")
+_PDF_NUMBER_BYTES = rb"[+-]?(?:(?:\d+\.\d*)|(?:\.\d+)|(?:\d+))(?:[eE][+-]?\d+)?"
+_TYPE3_LEADING_Q_D0_RE = re.compile(
+    rb"(?s)^\s*(?P<save>(?:q\s*)+)"
+    rb"(?P<metrics>"
+    + _PDF_NUMBER_BYTES
+    + rb"\s+"
+    + _PDF_NUMBER_BYTES
+    + rb"\s+d0\b)(?P<rest>.*)$"
+)
+_TYPE3_LEADING_Q_D1_RE = re.compile(
+    rb"(?s)^\s*(?P<save>(?:q\s*)+)"
+    rb"(?P<metrics>"
+    + _PDF_NUMBER_BYTES
+    + rb"\s+"
+    + _PDF_NUMBER_BYTES
+    + rb"\s+"
+    + _PDF_NUMBER_BYTES
+    + rb"\s+"
+    + _PDF_NUMBER_BYTES
+    + rb"\s+"
+    + _PDF_NUMBER_BYTES
+    + rb"\s+"
+    + _PDF_NUMBER_BYTES
+    + rb"\s+d1\b)(?P<rest>.*)$"
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -157,3 +182,69 @@ def get_type3_bbox(
             bbox_list[x] = char_bbox_merged
     doc.delete_page(-1)
     return bbox_list
+
+
+def sanitize_type3_charproc_metrics(doc) -> int:
+    """Move Type 3 d0/d1 metrics before a leading q operator.
+
+    Some PDF producers put graphics-state save operators before d0/d1 inside
+    Type 3 CharProcs. Poppler renders these files but reports syntax warnings.
+    The metrics operator is declarative and belongs at the start of the
+    CharProc, so moving it before a leading save operator preserves drawing
+    semantics while producing a cleaner stream.
+    """
+    fixed = 0
+    for font_xref in range(1, doc.xref_length()):
+        try:
+            subtype_type, subtype_value = doc.xref_get_key(font_xref, "Subtype")
+        except Exception:
+            continue
+        if subtype_type == "null" or subtype_value != "/Type3":
+            continue
+        try:
+            charprocs_type, charprocs_value = doc.xref_get_key(
+                font_xref, "CharProcs"
+            )
+        except Exception:
+            continue
+        if charprocs_type != "xref":
+            continue
+        try:
+            charprocs_xref = int(charprocs_value.split()[0])
+        except (ValueError, IndexError):
+            continue
+        for name in doc.xref_get_keys(charprocs_xref):
+            try:
+                ref_type, ref_value = doc.xref_get_key(charprocs_xref, name)
+            except Exception:
+                continue
+            if ref_type != "xref":
+                continue
+            try:
+                stream_xref = int(ref_value.split()[0])
+            except (ValueError, IndexError):
+                continue
+            stream = doc.xref_stream(stream_xref)
+            if not stream:
+                continue
+            normalized = _normalize_type3_charproc_stream(stream)
+            if normalized == stream:
+                continue
+            doc.update_stream(stream_xref, normalized)
+            fixed += 1
+    return fixed
+
+
+def _normalize_type3_charproc_stream(stream: bytes) -> bytes:
+    for pattern in (_TYPE3_LEADING_Q_D1_RE, _TYPE3_LEADING_Q_D0_RE):
+        match = pattern.match(stream)
+        if match is None:
+            continue
+        return (
+            match.group("metrics").strip()
+            + b"\n"
+            + match.group("save").strip()
+            + b"\n"
+            + match.group("rest").lstrip()
+        )
+    return stream

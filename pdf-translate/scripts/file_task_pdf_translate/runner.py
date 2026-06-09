@@ -182,7 +182,7 @@ def _instruction_for_pending(
     if task_type == "term_extract":
         body = (
             "Fill each TRANSLATION block with term pairs from the matching SOURCE "
-            f"block, one pair per line as `source term ? {target_language} term`. "
+            f"block, one pair per line as `source term -> {target_language} term`. "
             "Write `[]` when a source block has no terms."
         )
     elif task_type == "translate":

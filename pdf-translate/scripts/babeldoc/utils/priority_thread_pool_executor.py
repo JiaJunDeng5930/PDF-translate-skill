@@ -2,7 +2,6 @@
 # https://github.com/oleglpts/PriorityThreadPoolExecutor/blob/master/PriorityThreadPoolExecutor/__init__.py
 # https://github.com/oleglpts/PriorityThreadPoolExecutor/issues/4
 
-import atexit
 import itertools
 import logging
 import queue
@@ -13,7 +12,6 @@ import weakref
 from concurrent.futures import _base
 from concurrent.futures.thread import BrokenThreadPool
 from concurrent.futures.thread import ThreadPoolExecutor
-from concurrent.futures.thread import _python_exit
 from concurrent.futures.thread import _threads_queues
 from concurrent.futures.thread import _WorkItem
 from heapq import heappop
@@ -46,13 +44,6 @@ def python_exit():
         q.put(NULL_ENTRY)
     for t, _q in items:
         t.join()
-
-
-# change default cleanup
-
-
-atexit.unregister(_python_exit)
-atexit.register(python_exit)
 
 
 class PriorityQueue(queue.Queue):

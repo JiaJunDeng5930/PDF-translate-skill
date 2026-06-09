@@ -13,6 +13,7 @@ END_MARKER = "⟦END⟧"
 PROTECTED_MARKER_RE = re.compile(r"⟦(?:FORMULA|INLINE_MATH|PROTECTED_TEXT)⟧")
 INTERNAL_PLACEHOLDER_RE = re.compile(r"</?b\d+>", re.IGNORECASE)
 TERM_SEPARATORS = ("→", "->", "=>", "\t", "：", ":")
+QUESTION_MARK_SEPARATOR_RE = re.compile(r"\s+\?\s+")
 
 
 @dataclass
@@ -139,17 +140,26 @@ def parse_term_translation(text: str) -> tuple[list[tuple[str, str]], list[str]]
         line = raw_line.strip()
         if not line or line in {"[]", "无", "None", "none"}:
             continue
-        for separator in TERM_SEPARATORS:
-            if separator in line:
-                source, target = line.split(separator, 1)
-                source = source.strip().strip("-* ")
-                target = target.strip()
-                break
-        else:
+        split = _split_term_line(line)
+        if split is None:
             errors.append(f"cannot parse term line: {line[:80]}")
             continue
+        source, target = split
         if not source or not target:
             errors.append(f"term line has empty side: {line[:80]}")
             continue
         terms.append((source, target))
     return terms, errors
+
+
+def _split_term_line(line: str) -> tuple[str, str] | None:
+    for separator in TERM_SEPARATORS:
+        if separator in line:
+            source, target = line.split(separator, 1)
+            return source.strip().strip("-* "), target.strip()
+    match = QUESTION_MARK_SEPARATOR_RE.search(line)
+    if match is None:
+        return None
+    source = line[: match.start()]
+    target = line[match.end() :]
+    return source.strip().strip("-* "), target.strip()
