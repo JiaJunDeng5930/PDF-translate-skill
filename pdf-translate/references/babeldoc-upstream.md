@@ -13,8 +13,8 @@ Pipeline scope:
 
 - Preserve PDF parsing, layout analysis, formula/style handling, typesetting, font mapping, local asset loading, and PDF generation.
 - Add a file-backed AI task boundary around term extraction and LLM translation tasks.
-- Replace online LLM calls with `current_translation.txt` tasks that the AI edits between `advance` calls.
+- Replace online LLM calls with `current_translation.yaml` tasks that the AI edits between `advance` calls.
 - Move runtime asset download into `scripts/download_assets.py`; translation uses the configured local `asset_dir`.
 - Remove external product entrypoints from the delivered skill surface; `scripts/advance.py` is the execution entrypoint.
 
-When refreshing the source, keep the public skill interface stable: `scripts/advance.py` remains the no-argument entry point, and AI editing remains limited to `current_translation.txt`.
+When refreshing the source, keep the public skill interface stable: `scripts/advance.py` remains the no-argument entry point, and AI editing remains limited to `current_translation.yaml`.

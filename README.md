@@ -13,9 +13,9 @@ PDF Translate Skill gives coding agents a repeatable workflow for PDF translatio
 - Reads a workspace-level `pdf_translate.yaml` file.
 - Uses an explicit local runtime asset directory prepared before translation.
 - Runs a no-argument `advance.py` loop.
-- Pauses at translation tasks by writing `current_translation.txt`.
-- Lets the agent fill clean `SOURCE / TRANSLATION / END` blocks.
-- Validates block structure, protected markers, and term extraction output.
+- Pauses at translation tasks by writing `current_translation.yaml`.
+- Lets the agent fill structured YAML `translation` fields and `terms` lists.
+- Validates YAML structure, protected tokens, and term extraction output.
 - Replays accepted answers into the internal PDF pipeline.
 - Generates translated PDFs while preserving layout, figures, tables, formulas, page size, and PDF structure as far as the pipeline supports.
 
@@ -119,7 +119,7 @@ Run the skill from that PDF workspace:
 python /path/to/pdf-translate/scripts/advance.py
 ```
 
-When the result returns `needs_ai_edit` or `needs_ai_fix`, edit the returned `current_translation.txt`, save it, and run `advance.py` again. Repeat until the result returns `done`.
+When the result returns `needs_ai_edit` or `needs_ai_fix`, edit the returned `current_translation.yaml`, save it, and run `advance.py` again. Repeat until the result returns `done`.
 
 ## Usage
 
@@ -128,13 +128,21 @@ Typical agent workflow:
 1. Prepare runtime assets with `download_assets.py`.
 2. Create `pdf_translate.yaml` in the PDF workspace.
 3. Run `advance.py` from that workspace.
-4. Fill every `TRANSLATION` block in `current_translation.txt`.
-5. Keep every `SOURCE` block unchanged.
-6. Preserve protected markers such as `⟦FORMULA⟧`, `⟦INLINE_MATH⟧`, and `⟦PROTECTED_TEXT⟧`.
+4. Fill every YAML `translation` field for translation tasks.
+5. Keep every YAML `source` field unchanged.
+6. Preserve protected tokens such as `FORMULA_1` and `PROTECTED_1`.
 7. Run `advance.py` again.
 8. Use `output_pdf` or `output_pdfs` from the final JSON result.
 
-The runtime writes program-owned state under `.pdf_translate/`. Translation-stage editing is limited to `current_translation.txt`.
+The runtime writes program-owned state under `.pdf_translate/`. Translation-stage editing is limited to `current_translation.yaml`.
+
+Term extraction items use structured YAML pairs:
+
+```yaml
+terms:
+  - source: source term
+    target: target-language term
+```
 
 `pages` selects which pages are translated. The generated PDF keeps the source
 document page count, and pages outside the selected range are preserved from the
@@ -159,7 +167,7 @@ pdf_translate.yaml
   -> freeze config into .pdf_translate/state.json
   -> run internal PDF pipeline
   -> pause at term/translation task
-  -> write current_translation.txt
+  -> write current_translation.yaml
   -> validate accepted answer
   -> replay answer by task hash
   -> generate translated PDF
@@ -167,7 +175,7 @@ pdf_translate.yaml
 
 ## Limitations
 
-- Translation quality depends on the agent filling `current_translation.txt`; runtime validation checks structure and protected markers, not semantic accuracy.
+- Translation quality depends on the agent filling `current_translation.yaml`; runtime validation checks structure and protected tokens, not semantic accuracy.
 - The file-task loop is sequential.
 - Output fidelity depends on the internal PDF pipeline and the source PDF structure.
 - Scanned/OCR-heavy PDFs may need pipeline options that are not currently exposed in `pdf_translate.yaml`.
@@ -221,7 +229,7 @@ Contributions should keep the public contract stable:
 
 - `pdf-translate/scripts/advance.py` remains the public no-argument entrypoint.
 - `pdf_translate.yaml` remains the translation task config file.
-- `current_translation.txt` remains the only AI-editable file during translation tasks.
+- `current_translation.yaml` remains the only AI-editable file during translation tasks.
 - Program-owned state remains under `.pdf_translate/`.
 - BabelDOC-derived files that are modified must retain AGPL headers and prominent modification notices.
 - Third-party source or dependency changes must update `THIRD_PARTY_LICENSES.md`.

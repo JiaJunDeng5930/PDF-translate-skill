@@ -12,7 +12,7 @@ Preparation-stage config:
 
 Translation-stage state:
 
-- `current_translation.txt`: the only AI-editable file while a task is pending.
+- `current_translation.yaml`: the only AI-editable file while a task is pending.
 - `.pdf_translate/state.json`: frozen config, pending task, accepted answer index, final outputs.
 - `.pdf_translate/tasks/`: snapshots for pending tasks.
 - `.pdf_translate/accepted_answers/`: accepted editable files and JSON answers replayed into the internal PDF pipeline.
@@ -30,13 +30,13 @@ The BabelDOC-derived pipeline files with file-task changes are:
 
 Validation invariants:
 
-- Text block parsing is line-state based, so empty translation blocks remain valid blocks.
-- Source block count, order, and content must match the saved snapshot.
-- Translation tasks require every translation block to be non-empty.
-- Protected marker sequence must match the source block sequence.
-- Term extraction pairs must parse as `source -> target`. The validator also
-  accepts legacy separators such as `→`, `=>`, tab, colon, and ` ? `. Source
-  term matching normalizes PDF line-break hyphenation and abnormal whitespace.
+- Editable task parsing uses YAML with top-level `task` and `items` fields.
+- Item count, order, and every `source` field must match the saved snapshot.
+- Translation tasks require every `translation` field to be non-empty.
+- Protected token sequence must match the source item sequence.
+- Term extraction tasks require `terms` to be a YAML list of mappings with
+  `source` and `target` fields. Source term matching normalizes PDF line-break
+  hyphenation and abnormal whitespace.
 
 PDF generation is owned by the internal pipeline: `high_level.translate()` runs layout parsing, paragraph finding, styles/formulas, term extraction, IL translation, typesetting, font mapping, and PDF creation.
 
