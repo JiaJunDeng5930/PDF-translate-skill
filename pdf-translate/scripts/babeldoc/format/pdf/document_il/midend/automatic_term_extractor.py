@@ -20,9 +20,9 @@ from babeldoc.format.pdf.document_il.utils.paragraph_helper import (
 from babeldoc.format.pdf.document_il.utils.paragraph_helper import (
     is_pure_numeric_paragraph,
 )
-from babeldoc.offline_bridge import ImmediateExecutor
-from babeldoc.offline_bridge import OfflineTranslationPending
-from babeldoc.offline_bridge import is_offline_file_workflow
+from babeldoc.file_task_bridge import ImmediateExecutor
+from babeldoc.file_task_bridge import FileTaskPending
+from babeldoc.file_task_bridge import is_file_task_workflow
 from babeldoc.utils.priority_thread_pool_executor import PriorityThreadPoolExecutor
 
 if TYPE_CHECKING:
@@ -351,7 +351,7 @@ class AutomaticTermExtractor:
                             src_term, tgt_term
                         )
 
-        except OfflineTranslationPending:
+        except FileTaskPending:
             raise
         except Exception as e:
             logger.warning(f"Error during automatic terms extract: {e}")
@@ -370,7 +370,7 @@ class AutomaticTermExtractor:
             self.stage_name,
             total,
         ) as pbar:
-            if is_offline_file_workflow(self.translation_config):
+            if is_file_task_workflow(self.translation_config):
                 executor = ImmediateExecutor()
                 for page in doc_il.page:
                     self.process_page(page, executor, pbar, tracker.new_page())

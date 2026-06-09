@@ -22,6 +22,7 @@ class WorkspacePaths:
     private: Path
     state: Path
     trace: Path
+    config: Path
     current_translation: Path
     tasks: Path
     accepted: Path
@@ -38,6 +39,7 @@ def paths_for(root: Path) -> WorkspacePaths:
         private=private,
         state=private / "state.json",
         trace=private / "trace.jsonl",
+        config=root / "pdf_translate.yaml",
         current_translation=root / "current_translation.txt",
         tasks=private / "tasks",
         accepted=private / "accepted_answers",
@@ -104,42 +106,41 @@ def trace_tail(paths: WorkspacePaths, limit: int = 5) -> list[dict]:
     return result
 
 
-def find_single_pdf(root: Path) -> Path:
-    pdfs = sorted(
-        p for p in root.glob("*.pdf") if p.is_file() and not p.name.startswith("~")
-    )
-    if len(pdfs) != 1:
-        names = [p.name for p in pdfs]
-        raise RuntimeError(
-            "workspace must contain exactly one source PDF before the first advance; "
-            f"found {len(pdfs)}: {names}"
-        )
-    return pdfs[0]
-
-
-def default_state(input_pdf: Path) -> dict:
+def default_state(config_snapshot: dict) -> dict:
     return {
         "version": STATE_VERSION,
-        "input_pdf": str(input_pdf),
-        "lang_in": "English",
-        "lang_out": "zh-CN",
+        "config": config_snapshot,
+        "config_hash": config_snapshot["config_hash"],
+        "input_pdf": config_snapshot["input_pdf"],
         "accepted": {},
         "pending": None,
         "status": "initialized",
         "output_pdf": None,
+        "output_pdfs": {},
         "advance_count": 0,
     }
 
 
-def load_or_init_state(paths: WorkspacePaths) -> dict:
+def load_or_init_state(
+    paths: WorkspacePaths,
+    config_snapshot: dict | None = None,
+) -> dict:
     ensure_dirs(paths)
     state = read_json(paths.state, None)
     if state is not None:
         return state
-    input_pdf = find_single_pdf(paths.root)
-    state = default_state(input_pdf)
+    if config_snapshot is None:
+        raise RuntimeError("config snapshot is required to initialize state")
+    state = default_state(config_snapshot)
     write_json(paths.state, state)
-    append_trace(paths, "state_initialized", input_pdf=str(input_pdf))
+    append_trace(
+        paths,
+        "state_initialized",
+        input_pdf=config_snapshot["input_pdf"],
+        config_hash=config_snapshot["config_hash"],
+        config=config_snapshot,
+        babeldoc_config=config_snapshot["babeldoc_config"],
+    )
     return state
 
 

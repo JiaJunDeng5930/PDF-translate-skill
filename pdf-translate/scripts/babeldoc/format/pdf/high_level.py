@@ -52,7 +52,7 @@ from babeldoc.format.pdf.split_manager import SplitManager
 from babeldoc.format.pdf.translation_config import TranslateResult
 from babeldoc.format.pdf.translation_config import TranslationConfig
 from babeldoc.format.pdf.translation_config import WatermarkOutputMode
-from babeldoc.offline_bridge import OfflineTranslationPending
+from babeldoc.file_task_bridge import FileTaskPending
 from babeldoc.progress_monitor import ProgressMonitor
 from babeldoc.utils import memory
 
@@ -720,7 +720,7 @@ def do_translate(
         pm.translate_done(result)
         return result
 
-    except OfflineTranslationPending:
+    except FileTaskPending:
         pm.disable = False
         raise
     except Exception as e:

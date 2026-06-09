@@ -12,7 +12,7 @@ def _add_local_imports() -> None:
 
 def main() -> int:
     _add_local_imports()
-    from offline_pdf_translate.runner import main as runner_main
+    from file_task_pdf_translate.runner import main as runner_main
 
     return runner_main()
 

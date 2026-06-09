@@ -31,9 +31,9 @@ from babeldoc.format.pdf.document_il.utils.paragraph_helper import (
 )
 from babeldoc.format.pdf.translation_config import TitleContextSnapshot
 from babeldoc.format.pdf.translation_config import TranslationConfig
-from babeldoc.offline_bridge import ImmediateExecutor
-from babeldoc.offline_bridge import OfflineTranslationPending
-from babeldoc.offline_bridge import is_offline_file_workflow
+from babeldoc.file_task_bridge import ImmediateExecutor
+from babeldoc.file_task_bridge import FileTaskPending
+from babeldoc.file_task_bridge import is_file_task_workflow
 from babeldoc.translator.translator import BaseTranslator
 from babeldoc.utils.priority_thread_pool_executor import PriorityThreadPoolExecutor
 
@@ -212,7 +212,7 @@ class ILTranslatorLLMOnly:
             self.stage_name,
             total,
         ) as pbar:
-            if is_offline_file_workflow(self.translation_config):
+            if is_file_task_workflow(self.translation_config):
                 executor = ImmediateExecutor()
                 executor2 = ImmediateExecutor()
                 self.process_cross_page_paragraph(
@@ -798,13 +798,13 @@ class ILTranslatorLLMOnly:
 
                     input_token_count = self.calc_token_count(trimed_input)
                     output_token_count = self.calc_token_count(output_unicode)
-                    offline_file_workflow = is_offline_file_workflow(
+                    file_task_workflow = is_file_task_workflow(
                         self.translation_config
                     )
 
                     same_as_input = trimed_input == output_unicode
                     if (
-                        not offline_file_workflow
+                        not file_task_workflow
                         and same_as_input
                         and input_token_count > 10
                         and not self.translation_config.disable_same_text_fallback
@@ -819,7 +819,7 @@ class ILTranslatorLLMOnly:
                         continue
 
                     if (
-                        not offline_file_workflow
+                        not file_task_workflow
                         and not (0.3 < output_token_count / input_token_count < 3)
                     ):
                         llm_translate_tracker.set_error_message(
@@ -832,7 +832,7 @@ class ILTranslatorLLMOnly:
                         continue
 
                     if (
-                        not offline_file_workflow
+                        not file_task_workflow
                         and not self.translation_config.disable_same_text_fallback
                     ):
                         edit_distance = Levenshtein.distance(
@@ -893,7 +893,7 @@ class ILTranslatorLLMOnly:
                     else:
                         self.ok_count += 1
 
-        except OfflineTranslationPending:
+        except FileTaskPending:
             raise
         except Exception as e:
             error_message = f"Error {e} during translation. try fallback"

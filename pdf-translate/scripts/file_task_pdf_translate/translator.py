@@ -4,7 +4,7 @@ import json
 import re
 from pathlib import Path
 
-from babeldoc.offline_bridge import OfflineTranslationPending
+from babeldoc.file_task_bridge import FileTaskPending
 from babeldoc.translator.translator import BaseTranslator
 
 from .editable import EditableBlock
@@ -23,11 +23,12 @@ TERM_INPUT_RE = re.compile(
 )
 
 
-class OfflineFileTranslator(BaseTranslator):
-    name = "offline-file"
+class FileTaskTranslator(BaseTranslator):
+    name = "file-task"
 
     def __init__(self, paths: WorkspacePaths, state: dict):
-        super().__init__("en", "zh-CN", ignore_cache=True)
+        config = state["config"]
+        super().__init__(config["lang_in"], config["lang_out"], ignore_cache=True)
         self.paths = paths
         self.state = state
         self.model = "current_translation"
@@ -45,7 +46,7 @@ class OfflineFileTranslator(BaseTranslator):
             for block in task["blocks"]
         ]
         save_pending_task(self.paths, self.state, task, blocks)
-        raise OfflineTranslationPending(task["task_hash"])
+        raise FileTaskPending(task["task_hash"])
 
     def do_translate(self, text, rate_limit_params: dict = None):
         task = self._translation_task_from_items([{"id": 0, "input": str(text)}])
@@ -59,7 +60,7 @@ class OfflineFileTranslator(BaseTranslator):
             for block in task["blocks"]
         ]
         save_pending_task(self.paths, self.state, task, blocks)
-        raise OfflineTranslationPending(task["task_hash"])
+        raise FileTaskPending(task["task_hash"])
 
     def _task_from_prompt(self, prompt: str) -> dict:
         if TRANSLATION_INPUT_MARKER in prompt:
@@ -77,7 +78,7 @@ class OfflineFileTranslator(BaseTranslator):
             source = prompt.split(SINGLE_TEXT_MARKER, 1)[1].strip()
             return self._translation_task_from_items([{"id": 0, "input": source}])
 
-        raise RuntimeError("unsupported offline LLM prompt shape")
+        raise RuntimeError("unsupported file-task LLM prompt shape")
 
     def _translation_task_from_items(self, items: list[dict]) -> dict:
         blocks = []
@@ -100,13 +101,16 @@ class OfflineFileTranslator(BaseTranslator):
 
         hash_payload = {
             "task_type": "translate",
-            "lang_out": self.state.get("lang_out"),
+            "lang_in": self.state["config"]["lang_in"],
+            "lang_out": self.state["config"]["lang_out"],
             "blocks": blocks,
         }
         task_hash = stable_hash(hash_payload)
         return {
             "task_type": "translate",
             "task_hash": task_hash,
+            "lang_in": self.state["config"]["lang_in"],
+            "lang_out": self.state["config"]["lang_out"],
             "blocks": blocks,
         }
 
@@ -124,12 +128,15 @@ class OfflineFileTranslator(BaseTranslator):
             )
         hash_payload = {
             "task_type": "term_extract",
-            "lang_out": self.state.get("lang_out"),
+            "lang_in": self.state["config"]["lang_in"],
+            "lang_out": self.state["config"]["lang_out"],
             "blocks": blocks,
         }
         task_hash = stable_hash(hash_payload)
         return {
             "task_type": "term_extract",
             "task_hash": task_hash,
+            "lang_in": self.state["config"]["lang_in"],
+            "lang_out": self.state["config"]["lang_out"],
             "blocks": blocks,
         }
