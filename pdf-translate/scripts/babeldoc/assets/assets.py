@@ -679,23 +679,31 @@ async def _download_doclayout_model_to(
     )
 
 
+async def _run_limited_downloads(coros, limit: int = 8) -> None:
+    semaphore = asyncio.Semaphore(limit)
+
+    async def run_one(coro):
+        async with semaphore:
+            return await coro
+
+    await asyncio.gather(*(run_one(coro) for coro in coros))
+
+
 async def _download_fonts_to(asset_dir: Path, client: httpx.AsyncClient) -> None:
     fastest_upstream, _ = await get_fastest_upstream_for_font(client)
     if fastest_upstream is None:
         raise AssetError("failed to choose a font asset upstream")
 
-    tasks = []
+    downloads = []
     for file_name, metadata in EMBEDDING_FONT_METADATA.items():
         target = asset_dir / "fonts" / file_name
         sha3_256 = metadata["sha3_256"]
         if verify_file(target, sha3_256):
             continue
         url = get_font_url_by_name_and_upstream(file_name, fastest_upstream)
-        tasks.append(
-            asyncio.create_task(download_file(client, url, target, sha3_256))
-        )
-    if tasks:
-        await asyncio.gather(*tasks)
+        downloads.append(download_file(client, url, target, sha3_256))
+    if downloads:
+        await _run_limited_downloads(downloads)
 
 
 async def _download_cmaps_to(asset_dir: Path, client: httpx.AsyncClient) -> None:
@@ -705,18 +713,16 @@ async def _download_cmaps_to(asset_dir: Path, client: httpx.AsyncClient) -> None
     if fastest_upstream not in CMAP_URL_BY_UPSTREAM:
         raise AssetError(f"invalid CMap asset upstream: {fastest_upstream}")
 
-    tasks = []
+    downloads = []
     for file_name, metadata in CMAP_METADATA.items():
         target = asset_dir / "cmap" / file_name
         sha3_256 = metadata["sha3_256"]
         if verify_file(target, sha3_256):
             continue
         url = CMAP_URL_BY_UPSTREAM[fastest_upstream](file_name)
-        tasks.append(
-            asyncio.create_task(download_file(client, url, target, sha3_256))
-        )
-    if tasks:
-        await asyncio.gather(*tasks)
+        downloads.append(download_file(client, url, target, sha3_256))
+    if downloads:
+        await _run_limited_downloads(downloads)
 
 
 async def download_runtime_assets_async(output_directory: Path) -> Path:
