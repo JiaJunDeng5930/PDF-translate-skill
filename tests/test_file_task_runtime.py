@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import hashlib
+import json
+import os
 import shutil
 import sys
 import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -19,6 +23,7 @@ class RuntimeConfigTests(unittest.TestCase):
         self.tmp = Path(tempfile.mkdtemp(prefix="pdf-translate-test-"))
         self.addCleanup(lambda: shutil.rmtree(self.tmp, ignore_errors=True))
         (self.tmp / "paper.pdf").write_bytes(b"%PDF-1.4\n%%EOF\n")
+        (self.tmp / "assets").mkdir()
 
     def write_config(self, text: str) -> None:
         (self.tmp / "pdf_translate.yaml").write_text(text, encoding="utf-8")
@@ -53,6 +58,8 @@ primary_font_family: display
         self.assertIn("input_pdf is required", message)
         self.assertIn("lang_in is required", message)
         self.assertIn("lang_out is required", message)
+        self.assertIn("asset_dir is required", message)
+        self.assertIn("version is not a translation setting", message)
         self.assertIn("output_mode must be one of", message)
         self.assertIn("watermark_output_mode must be one of", message)
         self.assertIn("primary_font_family must be", message)
@@ -66,10 +73,10 @@ primary_font_family: display
 
         self.write_config(
             """
-version: 1
 input_pdf: paper.pdf
 lang_in: en
 lang_out: ja
+asset_dir: assets
 pages: "2-3"
 output_mode: dual
 watermark_output_mode: both
@@ -86,10 +93,15 @@ add_formula_placehold_hint: false
             "accepted": {},
         }
         translator = FileTaskTranslator(paths_for(self.tmp), state)
-        config = _build_translation_config(paths_for(self.tmp), state, translator)
+        with patch(
+            "babeldoc.docvision.doclayout.DocLayoutModel.load_available",
+            return_value=object(),
+        ):
+            config = _build_translation_config(paths_for(self.tmp), state, translator)
 
         self.assertEqual(translator.lang_in, "en")
         self.assertEqual(translator.lang_out, "ja")
+        self.assertEqual(snapshot["asset_dir"], str((self.tmp / "assets").resolve()))
         self.assertEqual(config.lang_in, "en")
         self.assertEqual(config.lang_out, "ja")
         self.assertEqual(config.pages, "2-3")
@@ -108,10 +120,10 @@ add_formula_placehold_hint: false
 
         self.write_config(
             """
-version: 1
 input_pdf: paper.pdf
 lang_in: en
 lang_out: zh-CN
+asset_dir: assets
 output_mode: mono
 watermark_output_mode: watermarked
 auto_extract_glossary: true
@@ -124,10 +136,10 @@ add_formula_placehold_hint: true
         load_or_init_state(paths_for(self.tmp), config.snapshot)
         self.write_config(
             """
-version: 1
 input_pdf: paper.pdf
 lang_in: en
 lang_out: ja
+asset_dir: assets
 output_mode: mono
 watermark_output_mode: watermarked
 auto_extract_glossary: true
@@ -141,6 +153,77 @@ add_formula_placehold_hint: true
 
         self.assertEqual(result["status"], "config_error")
         self.assertIn("changed", result["validation_errors"][0])
+
+    def test_advance_reports_asset_error_before_initializing_state(self) -> None:
+        from file_task_pdf_translate.runner import advance
+
+        self.write_config(
+            """
+input_pdf: paper.pdf
+lang_in: en
+lang_out: zh-CN
+asset_dir: missing-assets
+output_mode: mono
+watermark_output_mode: watermarked
+auto_extract_glossary: true
+primary_font_family: null
+add_formula_placehold_hint: true
+""".strip()
+            + "\n",
+        )
+
+        result = advance(self.tmp)
+
+        self.assertEqual(result["status"], "asset_error")
+        self.assertIn("asset_dir", result["validation_errors"][0])
+        self.assertFalse((self.tmp / ".pdf_translate" / "state.json").exists())
+
+
+class RuntimeAssetTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp(prefix="pdf-translate-assets-test-"))
+        self.addCleanup(lambda: shutil.rmtree(self.tmp, ignore_errors=True))
+
+    def test_runtime_asset_dir_requires_manifest_and_hashes(self) -> None:
+        from babeldoc.assets.assets import AssetError
+        from babeldoc.assets.assets import set_runtime_asset_dir
+
+        with self.assertRaises(AssetError) as ctx:
+            set_runtime_asset_dir(self.tmp)
+
+        self.assertIn("manifest", str(ctx.exception))
+
+    def test_runtime_asset_dir_sets_tiktoken_cache_after_manifest_validation(self) -> None:
+        from babeldoc.assets.assets import clear_runtime_asset_dir
+        from babeldoc.assets.assets import set_runtime_asset_dir
+
+        payload = b"asset"
+        digest = hashlib.sha3_256(payload).hexdigest()
+        (self.tmp / "models").mkdir()
+        (self.tmp / "fonts").mkdir()
+        (self.tmp / "cmap").mkdir()
+        (self.tmp / "tiktoken").mkdir()
+        (self.tmp / "models" / "model.onnx").write_bytes(payload)
+        manifest = {
+            "models": [{"name": "model.onnx", "sha3_256": digest}],
+            "fonts": [],
+            "cmap": [],
+            "tiktoken": [],
+        }
+        (self.tmp / "manifest.json").write_text(
+            json.dumps(manifest, indent=2) + "\n",
+            encoding="utf-8",
+        )
+
+        with patch(
+            "babeldoc.assets.assets.generate_all_assets_file_list",
+            return_value=manifest,
+        ):
+            asset_dir = set_runtime_asset_dir(self.tmp)
+        self.addCleanup(clear_runtime_asset_dir)
+
+        self.assertEqual(asset_dir, self.tmp.resolve())
+        self.assertEqual(os.environ["TIKTOKEN_CACHE_DIR"], str(self.tmp / "tiktoken"))
 
 
 class OutputSelectionTests(unittest.TestCase):
