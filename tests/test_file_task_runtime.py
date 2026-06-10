@@ -264,6 +264,15 @@ class RuntimeAssetTests(unittest.TestCase):
         self.assertEqual(asset_dir, self.tmp.resolve())
 
 
+class DependencySpecificationRegressionTests(unittest.TestCase):
+    def test_cryptography_requirement_respects_pyopenssl_runtime_bound(self) -> None:
+        requirements = (
+            REPO_ROOT / "pdf-translate" / "scripts" / "requirements.txt"
+        ).read_text(encoding="utf-8").splitlines()
+
+        self.assertIn("cryptography>=46.0.7,<47", requirements)
+
+
 class OutputSelectionTests(unittest.TestCase):
     def test_output_pdfs_exposes_every_generated_variant_and_primary_path(self) -> None:
         from file_task_pdf_translate.runner import _collect_output_pdfs
@@ -366,7 +375,7 @@ items:
             {"<b0>"},
         )
 
-        self.assertEqual(display, "Use FORMULA_1 and PROTECTED_1.")
+        self.assertEqual(display, "Use {{FORMULA_1}} and {{PROTECTED_1}}.")
         self.assertEqual(marker_sequence(display), ["FORMULA_1", "PROTECTED_1"])
         self.assertEqual(
             restore_internal_placeholders(display, token_map),
@@ -375,11 +384,18 @@ items:
         self.assertNotIn("[[", display)
         self.assertNotIn("⟦", display)
 
-
-    def test_protected_tokens_are_detected_when_adjacent_to_text(self) -> None:
+    def test_protected_tokens_are_detected_when_adjacent_to_text_and_digits(self) -> None:
         from file_task_pdf_translate.editable import marker_sequence
+        from file_task_pdf_translate.editable import replace_internal_placeholders
         from file_task_pdf_translate.editable import restore_internal_placeholders
 
+        display, token_map = replace_internal_placeholders("<b6></b7>3<b8>")
+
+        self.assertEqual(display, "{{PROTECTED_1}}{{PROTECTED_2}}3{{PROTECTED_3}}")
+        self.assertEqual(
+            marker_sequence(display),
+            ["PROTECTED_1", "PROTECTED_2", "PROTECTED_3"],
+        )
         self.assertEqual(
             marker_sequence("Liangsi LuFORMULA_1Xuhang Chen"),
             ["FORMULA_1"],
@@ -401,6 +417,10 @@ items:
                 ],
             ),
             "<b0><b1>Corresponding author",
+        )
+        self.assertEqual(
+            restore_internal_placeholders(display, token_map),
+            "<b6></b7>3<b8>",
         )
 
 
@@ -549,6 +569,90 @@ class EditableYamlWorkflowTests(unittest.TestCase):
         self.assertEqual(accepted, [{"id": 0, "output": "你好，世界"}])
 
 
+    def test_translation_validation_rejects_snapshot_markers_missing_from_token_map(self) -> None:
+        from file_task_pdf_translate.editable import EditableBlock
+        from file_task_pdf_translate.editable import render_editable_document
+        from file_task_pdf_translate.state import ensure_dirs
+        from file_task_pdf_translate.state import paths_for
+        from file_task_pdf_translate.state import write_json
+        from file_task_pdf_translate.validation import validate_pending
+
+        paths = paths_for(self.tmp)
+        ensure_dirs(paths)
+        source = "Eq PROTECTED_2PROTECTED_34.5"
+        pending = {
+            "task_type": "translate",
+            "task_hash": "ambiguous-marker",
+            "blocks": [
+                {
+                    "source": source,
+                    "original_source": "<b1></b1>4.5",
+                    "token_map": [
+                        {"marker": "PROTECTED_2", "token": "<b1>"},
+                        {"marker": "PROTECTED_3", "token": "</b1>"},
+                    ],
+                    "required_markers": ["PROTECTED_2", "PROTECTED_34"],
+                }
+            ],
+        }
+        state = {"pending": pending, "status": "needs_ai_edit", "accepted": {}}
+        write_json(paths.state, state)
+        paths.current_translation.write_text(
+            render_editable_document(
+                "translate",
+                [EditableBlock(source=source, translation=source)],
+                "zh-CN",
+            ),
+            encoding="utf-8",
+        )
+
+        result = validate_pending(paths, state)
+
+        self.assertFalse(result.accepted)
+        self.assertEqual(result.status, "needs_ai_fix")
+        self.assertIn("PROTECTED_34", "\n".join(result.errors))
+
+    def test_translation_validation_rejects_unbalanced_restored_internal_tags(self) -> None:
+        from file_task_pdf_translate.editable import EditableBlock
+        from file_task_pdf_translate.editable import render_editable_document
+        from file_task_pdf_translate.state import ensure_dirs
+        from file_task_pdf_translate.state import paths_for
+        from file_task_pdf_translate.state import write_json
+        from file_task_pdf_translate.validation import validate_pending
+
+        paths = paths_for(self.tmp)
+        ensure_dirs(paths)
+        source = "PROTECTED_1 text"
+        pending = {
+            "task_type": "translate",
+            "task_hash": "unbalanced-marker",
+            "blocks": [
+                {
+                    "source": source,
+                    "original_source": "</b1> text",
+                    "token_map": [{"marker": "PROTECTED_1", "token": "</b1>"}],
+                    "required_markers": ["PROTECTED_1"],
+                }
+            ],
+        }
+        state = {"pending": pending, "status": "needs_ai_edit", "accepted": {}}
+        write_json(paths.state, state)
+        paths.current_translation.write_text(
+            render_editable_document(
+                "translate",
+                [EditableBlock(source=source, translation=source)],
+                "zh-CN",
+            ),
+            encoding="utf-8",
+        )
+
+        result = validate_pending(paths, state)
+
+        self.assertFalse(result.accepted)
+        self.assertEqual(result.status, "needs_ai_fix")
+        self.assertIn("unmatched closing tag", "\n".join(result.errors))
+
+
 class TranslationSelectionRegressionTests(unittest.TestCase):
     def test_file_task_translation_keeps_short_visible_labels(self) -> None:
         from babeldoc.format.pdf.document_il.midend import il_translator_llm_only
@@ -695,6 +799,83 @@ class ProgressPersistenceRegressionTests(unittest.TestCase):
         self.assertEqual(state["pipeline_progress"]["stage"], "Parse Page Layout")
         self.assertEqual(state["pipeline_progress"]["stage_current"], 1)
 
+    def test_file_task_pending_marks_stage_paused_instead_of_complete(self) -> None:
+        from babeldoc.file_task_bridge import FileTaskPending
+        from babeldoc.progress_monitor import ProgressMonitor
+        from file_task_pdf_translate.runner import _record_pipeline_progress
+        from file_task_pdf_translate.state import ensure_dirs
+        from file_task_pdf_translate.state import paths_for
+        from file_task_pdf_translate.state import read_json
+        from file_task_pdf_translate.state import write_json
+
+        paths = paths_for(self.tmp)
+        ensure_dirs(paths)
+        write_json(paths.state, {"status": "running", "accepted": {}})
+        monitor = ProgressMonitor(
+            [("Translate Paragraphs", 1.0)],
+            progress_change_callback=lambda **event: _record_pipeline_progress(paths, event),
+            report_interval=0,
+        )
+
+        with self.assertRaises(FileTaskPending):
+            with monitor.stage_start("Translate Paragraphs", 2) as stage:
+                stage.advance()
+                raise FileTaskPending("task-hash")
+
+        state = read_json(paths.state, None)
+        self.assertEqual(state["pipeline_progress"]["event_type"], "progress_paused")
+        self.assertEqual(state["pipeline_progress"]["stage"], "Translate Paragraphs")
+        self.assertEqual(state["pipeline_progress"]["stage_current"], 1)
+        self.assertLess(state["pipeline_progress"]["stage_progress"], 100.0)
+
+
+class PreprocessCacheRegressionTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp(prefix="pdf-translate-cache-test-"))
+        self.addCleanup(lambda: shutil.rmtree(self.tmp, ignore_errors=True))
+
+    def test_file_task_preprocess_cache_restores_latest_saved_stage(self) -> None:
+        from babeldoc.format.pdf.high_level import _load_file_task_preprocess_cache
+        from babeldoc.format.pdf.high_level import _save_file_task_preprocess_cache
+
+        source_pdf = self.tmp / "paper.pdf"
+        source_pdf.write_bytes(b"source-pdf")
+        normalized_pdf = self.tmp / "input.pdf"
+        normalized_pdf.write_bytes(b"normalized-pdf")
+        config = SimpleNamespace(
+            file_task_workflow=True,
+            file_task_preprocess_cache_key="config-hash",
+            input_file=source_pdf,
+            only_parse_generate_pdf=False,
+            split_strategy=None,
+            working_dir=self.tmp / "work",
+        )
+
+        class Converter:
+            def write_xml(self, document, path):
+                Path(path).write_text(document["payload"], encoding="utf-8")
+
+            def read_xml(self, path):
+                return {"payload": Path(path).read_text(encoding="utf-8")}
+
+        converter = Converter()
+        _save_file_task_preprocess_cache(
+            config,
+            converter,
+            "styles_and_formulas",
+            normalized_pdf,
+            {"payload": "cached-docs"},
+            {7: {"MediaBox": "[0 0 100 100]"}},
+        )
+
+        cached = _load_file_task_preprocess_cache(config, converter)
+
+        self.assertIsNotNone(cached)
+        self.assertEqual(cached["stage"], "styles_and_formulas")
+        self.assertEqual(cached["docs"], {"payload": "cached-docs"})
+        self.assertEqual(cached["mediabox_data"], {7: {"MediaBox": "[0 0 100 100]"}})
+        self.assertEqual(cached["temp_pdf_path"].read_bytes(), b"normalized-pdf")
+
 
 class ProcessExitRegressionTests(unittest.TestCase):
     def test_priority_executor_import_does_not_block_process_exit(self) -> None:
@@ -716,6 +897,76 @@ with ThreadPoolExecutor(max_workers=1) as executor:
         )
 
         self.assertEqual(completed.stdout.strip(), "1")
+
+    def test_advance_runs_runtime_cleanup_before_pending_response(self) -> None:
+        from babeldoc.file_task_bridge import FileTaskPending
+        from file_task_pdf_translate.editable import EditableBlock
+        from file_task_pdf_translate.editable import render_editable_document
+        from file_task_pdf_translate.runner import advance
+        from file_task_pdf_translate.state import paths_for
+        from file_task_pdf_translate.state import read_json
+        from file_task_pdf_translate.state import write_json
+
+        with tempfile.TemporaryDirectory(prefix="pdf-translate-exit-test-") as tmp:
+            workspace = Path(tmp)
+            (workspace / "paper.pdf").write_bytes(b"%PDF-1.4\n%%EOF\n")
+            (workspace / "assets").mkdir()
+            (workspace / "pdf_translate.yaml").write_text(
+                """
+input_pdf: paper.pdf
+lang_in: en
+lang_out: zh-CN
+asset_dir: assets
+output_mode: mono
+watermark_output_mode: watermarked
+auto_extract_glossary: false
+primary_font_family: null
+add_formula_placehold_hint: true
+""".lstrip(),
+                encoding="utf-8",
+            )
+
+            def raise_pending(_config):
+                paths = paths_for(workspace)
+                state = read_json(paths.state, {})
+                state["status"] = "needs_ai_edit"
+                state["pending"] = {
+                    "task_type": "translate",
+                    "task_hash": "pending-cleanup",
+                    "lang_out": "zh-CN",
+                    "blocks": [
+                        {
+                            "source": "hello",
+                            "original_source": "hello",
+                            "token_map": [],
+                            "required_markers": [],
+                        }
+                    ],
+                }
+                paths.current_translation.write_text(
+                    render_editable_document(
+                        "translate",
+                        [EditableBlock(source="hello")],
+                        "zh-CN",
+                    ),
+                    encoding="utf-8",
+                )
+                write_json(paths.state, state)
+                raise FileTaskPending("pending-cleanup")
+
+            with patch(
+                "file_task_pdf_translate.runner.set_runtime_asset_dir",
+                return_value=workspace / "assets",
+            ), patch(
+                "file_task_pdf_translate.runner.translate",
+                side_effect=raise_pending,
+            ), patch(
+                "file_task_pdf_translate.runner.shutdown_file_task_runtime",
+            ) as cleanup:
+                result = advance(workspace)
+
+        self.assertEqual(result["status"], "needs_ai_edit")
+        cleanup.assert_called_once()
 
 
 if __name__ == "__main__":

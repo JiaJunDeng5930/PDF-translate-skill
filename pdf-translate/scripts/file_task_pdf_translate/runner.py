@@ -7,11 +7,13 @@ import json
 import logging
 import sys
 import traceback
+import gc
 from datetime import datetime
 from pathlib import Path
 
 from babeldoc.assets.assets import AssetError
 from babeldoc.assets.assets import set_runtime_asset_dir
+from babeldoc.const import close_process_pool
 from babeldoc.file_task_bridge import FileTaskPending
 from babeldoc.format.pdf.high_level import translate
 from babeldoc.format.pdf.translation_config import TranslationConfig
@@ -74,6 +76,7 @@ def advance(workspace: Path | None = None) -> dict:
         translator = FileTaskTranslator(paths, state)
         config = _build_translation_config(paths, state, translator)
         config.file_task_workflow = True
+        config.file_task_preprocess_cache_key = state["config_hash"]
         config.progress_change_callback = (
             lambda **event: _record_pipeline_progress(paths, event)
         )
@@ -108,6 +111,8 @@ def advance(workspace: Path | None = None) -> dict:
                 "output_pdf": None,
                 "output_pdfs": {},
             }
+        finally:
+            shutdown_file_task_runtime()
 
         output_pdfs, output_pdf = _collect_output_pdfs(result, state["config"])
         state["status"] = "done"
@@ -239,12 +244,21 @@ def _record_pipeline_progress(paths, event: dict) -> None:
         "overall_progress": event.get("overall_progress"),
         "part_index": event.get("part_index"),
         "total_parts": event.get("total_parts"),
+        "paused_for_ai": event_type == "progress_paused",
         "updated_at": datetime.now().isoformat(timespec="seconds"),
     }
     state["pipeline_progress"] = progress
     write_json(paths.state, state)
-    if event_type in {"progress_start", "progress_end"}:
+    if event_type in {"progress_start", "progress_end", "progress_paused"}:
         append_trace(paths, "pipeline_progress", **progress)
+
+
+def shutdown_file_task_runtime() -> None:
+    try:
+        close_process_pool()
+    except Exception:
+        logger.debug("failed to close BabelDOC process pool", exc_info=True)
+    gc.collect()
 
 
 def _config_drift_error(state: dict, current_config: dict) -> str | None:

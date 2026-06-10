@@ -6,6 +6,8 @@ from asyncio import CancelledError
 from collections.abc import Callable
 from typing import Optional
 
+from babeldoc.file_task_bridge import FileTaskPending
+
 logger = logging.getLogger(__name__)
 
 
@@ -172,6 +174,25 @@ class ProgressMonitor:
                 total_parts=self.total_parts,
             )
 
+    def stage_paused(self, stage):
+        if self.disable or self.parent_monitor and self.parent_monitor.disable:
+            return
+        if stage.total != 0:
+            stage_progress = stage.current * 100 / stage.total
+        else:
+            stage_progress = 0.0
+        if self.progress_change_callback:
+            self.progress_change_callback(
+                type="progress_paused",
+                stage=stage.display_name,
+                stage_progress=stage_progress,
+                stage_current=stage.current,
+                stage_total=stage.total,
+                overall_progress=self.calculate_current_progress(stage),
+                part_index=self.part_index + 1,
+                total_parts=self.total_parts,
+            )
+
     def calculate_current_progress(self, stage=None):
         if self.disable or self.parent_monitor and self.parent_monitor.disable:
             return 100
@@ -282,6 +303,9 @@ class TranslationStage:
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         with self.lock:
+            if exc_type is not None and issubclass(exc_type, FileTaskPending):
+                self.pm.stage_paused(self)
+                return
             diff = self.total - self.current
             if diff > 0:
                 logger.info(

@@ -10,8 +10,14 @@ from typing import Any
 
 import yaml
 
-PROTECTED_TOKEN_RE = re.compile(r"(?:FORMULA|PROTECTED)_[0-9]+")
-INTERNAL_PLACEHOLDER_RE = re.compile(r"</?b\d+>", re.IGNORECASE)
+MARKER_OPEN = "{{"
+MARKER_CLOSE = "}}"
+MARKER_NAME_RE = re.compile(r"(?:FORMULA|PROTECTED)_[0-9]+")
+PROTECTED_TOKEN_RE = re.compile(
+    rf"{re.escape(MARKER_OPEN)}((?:FORMULA|PROTECTED)_[0-9]+)"
+    rf"{re.escape(MARKER_CLOSE)}|((?:FORMULA|PROTECTED)_[0-9]+)"
+)
+INTERNAL_PLACEHOLDER_RE = re.compile(r"<(?P<closing>/)?(?P<name>b\d+)>", re.IGNORECASE)
 
 
 @dataclass
@@ -163,8 +169,67 @@ def _parse_terms(raw_terms, item_index: int) -> tuple[list[TermPair], list[str]]
     return terms, errors
 
 
-def marker_sequence(text: str) -> list[str]:
-    return PROTECTED_TOKEN_RE.findall(text)
+def render_marker(marker: str) -> str:
+    return f"{MARKER_OPEN}{marker}{MARKER_CLOSE}"
+
+
+def token_map_marker_sequence(token_map: list[dict[str, str]]) -> list[str]:
+    markers = []
+    for entry in token_map:
+        marker = entry.get("marker")
+        if isinstance(marker, str) and MARKER_NAME_RE.fullmatch(marker):
+            markers.append(marker)
+    return markers
+
+
+def marker_sequence(
+    text: str,
+    token_map: list[dict[str, str]] | None = None,
+) -> list[str]:
+    if token_map is not None:
+        return [
+            occurrence["marker"]
+            for occurrence in _known_marker_occurrences(text, token_map)
+        ]
+    return [match.group(1) or match.group(2) for match in PROTECTED_TOKEN_RE.finditer(text)]
+
+
+def unknown_marker_sequence(text: str, token_map: list[dict[str, str]]) -> list[str]:
+    known = set(token_map_marker_sequence(token_map))
+    return [marker for marker in marker_sequence(text) if marker not in known]
+
+
+def _known_marker_occurrences(
+    text: str,
+    token_map: list[dict[str, str]],
+) -> list[dict[str, int | str]]:
+    candidates = []
+    for marker in token_map_marker_sequence(token_map):
+        for rendered in (render_marker(marker), marker):
+            start = 0
+            while True:
+                index = text.find(rendered, start)
+                if index < 0:
+                    break
+                candidates.append(
+                    {
+                        "start": index,
+                        "end": index + len(rendered),
+                        "marker": marker,
+                        "length": len(rendered),
+                    }
+                )
+                start = index + 1
+
+    candidates.sort(key=lambda item: (item["start"], -item["length"]))
+    selected = []
+    occupied_until = -1
+    for candidate in candidates:
+        if candidate["start"] < occupied_until:
+            continue
+        selected.append(candidate)
+        occupied_until = candidate["end"]
+    return selected
 
 
 def replace_internal_placeholders(
@@ -181,7 +246,7 @@ def replace_internal_placeholders(
         counters[kind] += 1
         marker = f"{kind}_{counters[kind]}"
         token_map.append({"marker": marker, "token": token})
-        return marker
+        return render_marker(marker)
 
     return INTERNAL_PLACEHOLDER_RE.sub(replace, text), token_map
 
@@ -192,9 +257,41 @@ def restore_internal_placeholders(text: str, token_map: list[dict[str, str]]) ->
         for entry in token_map
         if "marker" in entry and "token" in entry
     }
+    occurrences = _known_marker_occurrences(text, token_map)
+    if not occurrences:
+        return text
 
-    def replace(match: re.Match[str]) -> str:
-        marker = match.group(0)
-        return marker_to_token.get(marker, marker)
+    restored = []
+    cursor = 0
+    for occurrence in occurrences:
+        start = int(occurrence["start"])
+        end = int(occurrence["end"])
+        marker = str(occurrence["marker"])
+        restored.append(text[cursor:start])
+        restored.append(marker_to_token.get(marker, text[start:end]))
+        cursor = end
+    restored.append(text[cursor:])
+    return "".join(restored)
 
-    return PROTECTED_TOKEN_RE.sub(replace, text)
+
+def validate_internal_placeholder_markup(text: str) -> list[str]:
+    stack: list[str] = []
+    errors: list[str] = []
+    for match in INTERNAL_PLACEHOLDER_RE.finditer(text):
+        name = match.group("name").lower()
+        if match.group("closing"):
+            if not stack:
+                errors.append(f"unmatched closing tag </{name}>")
+            elif stack[-1] != name:
+                expected = stack[-1]
+                errors.append(
+                    f"mismatched closing tag </{name}> while <{expected}> is open"
+                )
+                stack.pop()
+            else:
+                stack.pop()
+        else:
+            stack.append(name)
+    for name in reversed(stack):
+        errors.append(f"unmatched opening tag <{name}>")
+    return errors

@@ -12,6 +12,9 @@ from .editable import marker_sequence
 from .editable import parse_editable_document
 from .editable import render_editable_document
 from .editable import restore_internal_placeholders
+from .editable import token_map_marker_sequence
+from .editable import unknown_marker_sequence
+from .editable import validate_internal_placeholder_markup
 from .state import WorkspacePaths
 from .state import append_trace
 from .state import archive_current_translation
@@ -78,6 +81,7 @@ def validate_pending(paths: WorkspacePaths, state: dict) -> ValidationResult:
         return ValidationResult(False, "needs_ai_fix", errors, [])
 
     errors = _validate_sources(pending, blocks)
+    errors.extend(_validate_snapshot_markers(pending))
     if errors:
         append_trace(
             paths,
@@ -146,6 +150,44 @@ def _validate_sources(pending: dict, blocks: list[EditableBlock]) -> list[str]:
     return errors
 
 
+def _validate_snapshot_markers(pending: dict) -> list[str]:
+    errors = []
+    for index, snapshot in enumerate(pending["blocks"], start=1):
+        token_map = snapshot.get("token_map", [])
+        known_markers = token_map_marker_sequence(token_map)
+        required_markers = snapshot.get("required_markers", [])
+        unknown_required = [
+            marker for marker in required_markers if marker not in known_markers
+        ]
+        for marker in unknown_required:
+            errors.append(
+                f"source block {index} requires unknown protected marker {marker}"
+            )
+
+        duplicate_required = sorted(
+            {
+                marker
+                for marker in required_markers
+                if required_markers.count(marker) > 1
+            }
+        )
+        for marker in duplicate_required:
+            errors.append(
+                f"source block {index} repeats impossible protected marker {marker}"
+            )
+
+        source_markers = marker_sequence(snapshot["source"], token_map)
+        if source_markers != required_markers:
+            errors.append(
+                f"source block {index} protected marker snapshot is inconsistent"
+            )
+        if source_markers != known_markers:
+            errors.append(
+                f"source block {index} protected marker map is inconsistent"
+            )
+    return errors
+
+
 def _build_answer_summary(
     pending: dict,
     blocks: list[EditableBlock],
@@ -183,7 +225,15 @@ def _build_translation_answer(
             errors.append(f"translation block {index} is empty")
             continue
         expected_markers = snapshot["required_markers"]
-        actual_markers = marker_sequence(block.translation)
+        token_map = snapshot.get("token_map", [])
+        unknown_markers = unknown_marker_sequence(block.translation, token_map)
+        if unknown_markers:
+            errors.append(
+                f"translation block {index} contains unknown protected marker "
+                + ", ".join(unknown_markers)
+            )
+            continue
+        actual_markers = marker_sequence(block.translation, token_map)
         if actual_markers != expected_markers:
             errors.append(
                 f"translation block {index} protected marker sequence mismatch"
@@ -193,8 +243,14 @@ def _build_translation_answer(
             warnings.append(f"translation block {index} is identical to source")
         restored = restore_internal_placeholders(
             block.translation,
-            snapshot.get("token_map", []),
+            token_map,
         )
+        markup_errors = validate_internal_placeholder_markup(restored)
+        if markup_errors:
+            errors.extend(
+                f"translation block {index}: {error}" for error in markup_errors
+            )
+            continue
         answer.append({"id": index - 1, "output": restored})
     return answer, errors, warnings
 

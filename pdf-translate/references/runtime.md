@@ -20,23 +20,25 @@ Translation-stage state:
 - `.pdf_translate/trace.jsonl`: compact config, progress, validation, answer, and output events.
 - `.pdf_translate/advance.lock`: PID and timestamp metadata for the active advance process. A live PID returns `locked`; a missing PID is recovered as stale and traced before the run continues.
 
-The runtime re-enters the internal PDF pipeline from the beginning on each advance and replays accepted answers by stable task hash. This keeps the workflow resumable while keeping checkpoints program-owned.
+The runtime re-enters the internal PDF pipeline on each advance and replays accepted answers by stable task hash. File-task preprocessing checkpoints live under `.pdf_translate/babeldoc_work/<input-stem>/file_task_preprocess_cache/` and store the normalized input PDF, mediabox data, and IL XML after completed preprocessing stages. A cache hit with matching `config_hash` and input PDF hash resumes after the latest saved stage.
 
-The synchronous BabelDOC progress monitor writes the latest pipeline stage into `state.json` as `pipeline_progress`. Stage starts and ends are also recorded in `trace.jsonl`, so long preprocessing runs expose their current stage even before a pending AI task exists.
+The synchronous BabelDOC progress monitor writes the latest pipeline stage into `state.json` as `pipeline_progress`. Stage starts, ends, and AI pauses are also recorded in `trace.jsonl`, so long preprocessing runs expose their current stage and pending AI edits report `paused_for_ai`.
 
 The BabelDOC-derived pipeline files with file-task changes are:
 
 - `babeldoc/file_task_bridge.py`: pending exception and immediate executor.
 - `babeldoc/format/pdf/document_il/midend/automatic_term_extractor.py`: file-task sequential term extraction and pending propagation.
 - `babeldoc/format/pdf/document_il/midend/il_translator_llm_only.py`: file-task sequential translation batches and pending propagation.
-- `babeldoc/format/pdf/high_level.py`: file-task pending propagation through the high-level pipeline.
+- `babeldoc/format/pdf/high_level.py`: file-task pending propagation and preprocessing checkpoints through the high-level pipeline.
 
 Validation invariants:
 
 - Editable task parsing uses YAML with top-level `task` and `items` fields.
 - Item count, order, and every `source` field must match the saved snapshot.
 - Translation tasks require every `translation` field to be non-empty.
-- Protected token sequence must match the source item sequence.
+- Protected markers render with ASCII braces, for example `{{FORMULA_1}}` and `{{PROTECTED_1}}`.
+- Required protected marker sequences are derived from each block's `token_map` by exact marker scanning.
+- Validation rejects markers outside the `token_map`, inconsistent snapshot marker sequences, duplicate required markers, and restored internal `<bN>` tag imbalance.
 - Term extraction tasks require `terms` to be a YAML list of mappings with
   `source` and `target` fields. Source term matching normalizes PDF line-break
   hyphenation and abnormal whitespace.

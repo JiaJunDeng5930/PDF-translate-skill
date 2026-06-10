@@ -15,7 +15,7 @@ PDF Translate Skill gives coding agents a repeatable workflow for PDF translatio
 - Runs a no-argument `advance.py` loop.
 - Pauses at translation tasks by writing `current_translation.yaml`.
 - Lets the agent fill structured YAML `translation` fields and `terms` lists.
-- Validates YAML structure, protected tokens, and term extraction output.
+- Validates YAML structure, protected tokens, restored internal tags, and term extraction output.
 - Replays accepted answers into the internal PDF pipeline.
 - Generates translated PDFs while preserving layout, figures, tables, formulas, page size, and PDF structure as far as the pipeline supports.
 
@@ -130,7 +130,7 @@ Typical agent workflow:
 3. Run `advance.py` from that workspace.
 4. Fill every YAML `translation` field for translation tasks.
 5. Keep every YAML `source` field unchanged.
-6. Preserve protected tokens such as `FORMULA_1` and `PROTECTED_1`.
+6. Preserve protected tokens such as `{{FORMULA_1}}` and `{{PROTECTED_1}}`.
 7. Run `advance.py` again.
 8. Use `output_pdf` or `output_pdfs` from the final JSON result.
 
@@ -175,7 +175,7 @@ pdf_translate.yaml
 
 ## Limitations
 
-- Translation quality depends on the agent filling `current_translation.yaml`; runtime validation checks structure and protected tokens, not semantic accuracy.
+- Translation quality depends on the agent filling `current_translation.yaml`; runtime validation checks structure, protected tokens, and restored internal tags.
 - The file-task loop is sequential.
 - Output fidelity depends on the internal PDF pipeline and the source PDF structure.
 - Scanned/OCR-heavy PDFs may need pipeline options that are not currently exposed in `pdf_translate.yaml`.

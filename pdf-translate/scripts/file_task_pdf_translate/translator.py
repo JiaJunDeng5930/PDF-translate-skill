@@ -97,7 +97,7 @@ class FileTaskTranslator(BaseTranslator):
                     "source": display_source,
                     "original_source": original_source,
                     "token_map": token_map,
-                    "required_markers": marker_sequence(display_source),
+                    "required_markers": marker_sequence(display_source, token_map),
                     "layout_label": item.get("layout_label"),
                 }
             )
@@ -126,7 +126,7 @@ class FileTaskTranslator(BaseTranslator):
                     "source": display_source,
                     "original_source": chunk,
                     "token_map": token_map,
-                    "required_markers": marker_sequence(display_source),
+                    "required_markers": marker_sequence(display_source, token_map),
                 }
             )
         hash_payload = {
