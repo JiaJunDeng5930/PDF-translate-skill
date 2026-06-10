@@ -37,6 +37,37 @@ _EXTGSTATE_USAGE_RE = re.compile(rb"/([!#$%&'*+,\-.0-9:;=?@A-Z\\^_`a-z{|}~]+)\s+
 _SHADING_USAGE_RE = re.compile(rb"/([!#$%&'*+,\-.0-9:;=?@A-Z\\^_`a-z{|}~]+)\s+sh\b")
 
 
+def _finite_float(value) -> float | None:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(number):
+        return None
+    return number
+
+
+def _finite_float_tuple(values, expected_length: int) -> tuple[float, ...] | None:
+    if values is None:
+        return None
+    try:
+        raw_values = tuple(values)
+    except TypeError:
+        return None
+    if len(raw_values) != expected_length:
+        return None
+    numbers = tuple(_finite_float(value) for value in raw_values)
+    if any(value is None for value in numbers):
+        return None
+    return numbers
+
+
+def _box_values(box) -> tuple[float, float, float, float] | None:
+    if box is None:
+        return None
+    return _finite_float_tuple((box.x, box.y, box.x2, box.y2), 4)
+
+
 class RenderUnit(ABC):
     """Abstract base class for all renderable units."""
 
@@ -87,9 +118,18 @@ class CharacterRenderUnit(RenderUnit):
         if char.pdf_character_id is None:
             return
 
-        char_size = char.pdf_style.font_size
+        char_size = _finite_float(char.pdf_style.font_size)
+        if char_size is None:
+            return
         font_id = char.pdf_style.font_id
         tf_font_size = self._font_size_for_pdf_tf(char_size, font_id, context)
+        tf_font_size = _finite_float(tf_font_size)
+        if tf_font_size is None:
+            return
+        box = _box_values(char.box)
+        if box is None:
+            return
+        x, y, x2, _y2 = box
 
         # Get encoding length map based on xobj_id
         if self.xobj_id in context.xobj_encoding_length_map:
@@ -110,12 +150,12 @@ class CharacterRenderUnit(RenderUnit):
 
         if char.vertical:
             draw_op.append(
-                f"BT /{font_id} {tf_font_size:f} Tf 0 1 -1 0 {char.box.x2:f} {char.box.y:f} Tm ".encode(),
+                f"BT /{font_id} {tf_font_size:f} Tf 0 1 -1 0 {x2:f} {y:f} Tm ".encode(),
             )
         else:
             text_draw_op = (
                 f"BT /{font_id} {tf_font_size:f} Tf "
-                f"1 0 0 1 {char.box.x:f} {char.box.y:f} Tm "
+                f"1 0 0 1 {x:f} {y:f} Tm "
             )
             draw_op.append(text_draw_op.encode())
 
@@ -177,12 +217,9 @@ class FormRenderUnit(RenderUnit):
         # This ensures masks in passthrough_per_char_instruction use the correct coordinate system
         assert form.pdf_matrix is not None
         if form.relocation_transform and len(form.relocation_transform) == 6:
-            try:
-                relocation_matrix = tuple(float(x) for x in form.relocation_transform)
+            relocation_matrix = _finite_float_tuple(form.relocation_transform, 6)
+            if relocation_matrix is not None:
                 draw_op.append(matrix_to_bytes(relocation_matrix))
-            except (ValueError, TypeError):
-                # If relocation transform conversion fails, skip it and use original matrix later
-                pass
 
         draw_op.append(matrix_to_bytes(form.pdf_matrix))
 
@@ -253,21 +290,24 @@ class RectangleRenderUnit(RenderUnit):
 
     def render(self, draw_op: BitStream, context: "RenderContext") -> None:
         rectangle = self.rectangle
-        x1 = rectangle.box.x
-        y1 = rectangle.box.y
-        x2 = rectangle.box.x2
-        y2 = rectangle.box.y2
+        box = _box_values(rectangle.box)
+        if box is None:
+            return
+        x1, y1, x2, y2 = box
         width = x2 - x1
         height = y2 - y1
 
         draw_op.append(b"q n ")
         draw_op.append(
-            rectangle.graphic_state.passthrough_per_char_instruction.encode(),
+            (rectangle.graphic_state.passthrough_per_char_instruction or "").encode(),
         )
 
         line_width = self.line_width
         if rectangle.line_width is not None:
             line_width = rectangle.line_width
+        line_width = _finite_float(line_width)
+        if line_width is None:
+            return
         if line_width > 0:
             draw_op.append(f" {line_width:.6f} w ".encode())
 
@@ -299,26 +339,22 @@ class CurveRenderUnit(RenderUnit):
         # Apply relocation transform first if present (before passthrough instructions)
         # This ensures masks in passthrough_per_char_instruction use the correct coordinate system
         if curve.relocation_transform and len(curve.relocation_transform) == 6:
-            try:
-                relocation_matrix = tuple(float(x) for x in curve.relocation_transform)
+            relocation_matrix = _finite_float_tuple(curve.relocation_transform, 6)
+            if relocation_matrix is not None:
                 draw_op.append(matrix_to_bytes(relocation_matrix))
-            except (ValueError, TypeError):
-                # If relocation transform conversion fails, skip it and use original CTM later
-                pass
 
         draw_op.append(b" ")
 
         # Apply original CTM if present
         if curve.ctm and len(curve.ctm) == 6:
-            ctm = curve.ctm
-            draw_op.append(
-                f"{ctm[0]:.6f} {ctm[1]:.6f} {ctm[2]:.6f} {ctm[3]:.6f} {ctm[4]:.6f} {ctm[5]:.6f} cm ".encode()
-            )
+            ctm = _finite_float_tuple(curve.ctm, 6)
+            if ctm is not None:
+                draw_op.append(matrix_to_bytes(ctm))
 
         draw_op.append(b" ")
 
         draw_op.append(
-            curve.graphic_state.passthrough_per_char_instruction.encode(),
+            (curve.graphic_state.passthrough_per_char_instruction or "").encode(),
         )
 
         if curve.passthrough_paint:
@@ -331,7 +367,7 @@ class CurveRenderUnit(RenderUnit):
         # Use original path if available, otherwise fall back to transformed path
         path_to_use = (
             curve.pdf_original_path
-            if curve.pdf_original_path is not None
+            if curve.pdf_original_path
             else curve.pdf_path
         )
         if not self._append_original_primitive_path(path_op):
@@ -339,7 +375,11 @@ class CurveRenderUnit(RenderUnit):
                 if isinstance(path, PdfOriginalPath):
                     path = path.pdf_path
                 if path.has_xy:
-                    path_op.append(f"{path.x:F} {path.y:F} {path.op} ".encode())
+                    x = _finite_float(path.x)
+                    y = _finite_float(path.y)
+                    if x is None or y is None:
+                        continue
+                    path_op.append(f"{x:F} {y:F} {path.op} ".encode())
                 else:
                     path_op.append(f"{path.op} ".encode())
 
@@ -986,10 +1026,10 @@ class PDFCreater:
             rectangle: Rectangle object containing position information
             line_width: Line width
         """
-        x1 = rectangle.box.x
-        y1 = rectangle.box.y
-        x2 = rectangle.box.x2
-        y2 = rectangle.box.y2
+        box = _box_values(rectangle.box)
+        if box is None:
+            return
+        x1, y1, x2, y2 = box
         width = x2 - x1
         height = y2 - y1
         # Save graphics state
@@ -997,10 +1037,13 @@ class PDFCreater:
 
         # Set green color for debug visibility
         draw_op.append(
-            rectangle.graphic_state.passthrough_per_char_instruction.encode(),
+            (rectangle.graphic_state.passthrough_per_char_instruction or "").encode(),
         )  # Green stroke
         if rectangle.line_width is not None:
             line_width = rectangle.line_width
+        line_width = _finite_float(line_width)
+        if line_width is None:
+            return
         if line_width > 0:
             draw_op.append(f" {line_width:.6f} w ".encode())  # Line width
         draw_op.append(f"{x1:.6f} {y1:.6f} {width:.6f} {height:.6f} re ".encode())
@@ -1152,8 +1195,12 @@ class PDFCreater:
             if base_op is not None:
                 page_op.append(base_op)
             page_op.append(b" Q ")
+            cropbox = _box_values(page.cropbox.box)
+            if cropbox is None:
+                continue
+            cropbox_x, cropbox_y, _cropbox_x2, _cropbox_y2 = cropbox
             page_op.append(
-                f"q Q 1 0 0 1 {page.cropbox.box.x:.6f} {page.cropbox.box.y:.6f} cm \n".encode(),
+                f"q Q 1 0 0 1 {cropbox_x:.6f} {cropbox_y:.6f} cm \n".encode(),
             )
             # 收集所有字符
             chars = []
@@ -1173,8 +1220,14 @@ class PDFCreater:
                 if char.pdf_character_id is None:
                     # dummy char
                     continue
-                char_size = char.pdf_style.font_size
+                char_size = _finite_float(char.pdf_style.font_size)
+                if char_size is None:
+                    continue
                 font_id = char.pdf_style.font_id
+                char_box = _box_values(char.box)
+                if char_box is None:
+                    continue
+                char_x, char_y, char_x2, _char_y2 = char_box
 
                 if font_id not in available_font_list:
                     continue
@@ -1185,11 +1238,11 @@ class PDFCreater:
                 self.render_graphic_state(draw_op, char.pdf_style.graphic_state)
                 if char.vertical:
                     draw_op.append(
-                        f"BT /{font_id} {char_size:f} Tf 0 1 -1 0 {char.box.x2:f} {char.box.y:f} Tm ".encode(),
+                        f"BT /{font_id} {char_size:f} Tf 0 1 -1 0 {char_x2:f} {char_y:f} Tm ".encode(),
                     )
                 else:
                     draw_op.append(
-                        f"BT /{font_id} {char_size:f} Tf 1 0 0 1 {char.box.x:f} {char.box.y:f} Tm ".encode(),
+                        f"BT /{font_id} {char_size:f} Tf 1 0 0 1 {char_x:f} {char_y:f} Tm ".encode(),
                     )
 
                 encoding_length = encoding_length_map[font_id]
@@ -1630,16 +1683,19 @@ class PDFCreater:
         self, check_font_exists, page, pdf, translation_config, skip_char: bool = False
     ):
         assert page.cropbox is not None and page.cropbox.box is not None
-        page_crop_box = page.cropbox.box
+        page_crop_box = _box_values(page.cropbox.box)
+        if page_crop_box is None:
+            return
+        page_crop_x, page_crop_y, _page_crop_x2, _page_crop_y2 = page_crop_box
         ctm_for_ops = (
             1,
             0,
             0,
             1,
-            -page_crop_box.x,
-            -page_crop_box.y,
+            -page_crop_x,
+            -page_crop_y,
         )
-        ctm_for_ops = f" {' '.join(f'{x:f}' for x in ctm_for_ops)} cm ".encode()
+        ctm_for_ops = matrix_to_bytes(ctm_for_ops)
         translation_config.raise_if_cancelled()
         xobj_available_fonts = {}
         xobj_draw_ops = {}

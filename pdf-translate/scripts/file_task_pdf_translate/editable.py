@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 from dataclasses import dataclass
 from dataclasses import field
 from typing import Any
@@ -18,6 +19,17 @@ PROTECTED_TOKEN_RE = re.compile(
     rf"{re.escape(MARKER_CLOSE)}|((?:FORMULA|PROTECTED)_[0-9]+)"
 )
 INTERNAL_PLACEHOLDER_RE = re.compile(r"<(?P<closing>/)?(?P<name>b\d+)>", re.IGNORECASE)
+ARROW_PLACEHOLDER_RE = re.compile(r"(?<=\w)\s*-\s*</?b\d+>\s*(?=\w)", re.IGNORECASE)
+CID_TEXT_RE = re.compile(r"\(cid:(?P<code>\d+)\)")
+CID_TEXT_REPLACEMENTS = {
+    "82": "∫",
+}
+JOINED_WORD_REPLACEMENTS = (
+    (re.compile(r"\bwhichderived\b", re.IGNORECASE), "which derived"),
+    (re.compile(r"\bproxyfor\b", re.IGNORECASE), "proxy for"),
+    (re.compile(r"\bpreservedor\b", re.IGNORECASE), "preserved or"),
+    (re.compile(r"\bintheAppendix\b"), "in the Appendix"),
+)
 
 
 @dataclass
@@ -143,6 +155,24 @@ def _parse_item(
     if not isinstance(translation, str):
         return None, [f"item {index}: translation must be a string"]
     return EditableBlock(source=source, translation=translation), []
+
+
+def normalize_extracted_pdf_text(text: str) -> str:
+    normalized = unicodedata.normalize("NFKC", str(text))
+    normalized = normalized.replace("\u00ad", "")
+    normalized = re.sub(
+        CID_TEXT_RE,
+        lambda match: CID_TEXT_REPLACEMENTS.get(match.group("code"), match.group(0)),
+        normalized,
+    )
+    normalized = ARROW_PLACEHOLDER_RE.sub(" -> ", normalized)
+    normalized = re.sub(r"(?<=\w)-\s+(?=\w)", "", normalized)
+    for pattern, replacement in JOINED_WORD_REPLACEMENTS:
+        normalized = pattern.sub(replacement, normalized)
+    normalized = re.sub(r"(?<=[a-z])(?=[A-Z](?:\b|[^a-z]))", " ", normalized)
+    normalized = re.sub(r"[ \t]+", " ", normalized)
+    normalized = re.sub(r"[ \t]*\n[ \t]*", "\n", normalized)
+    return normalized.strip()
 
 
 def _parse_terms(raw_terms, item_index: int) -> tuple[list[TermPair], list[str]]:
@@ -272,6 +302,14 @@ def restore_internal_placeholders(text: str, token_map: list[dict[str, str]]) ->
         cursor = end
     restored.append(text[cursor:])
     return "".join(restored)
+
+
+def internal_placeholder_markup_tokens(text: str) -> list[str]:
+    return [match.group(0) for match in INTERNAL_PLACEHOLDER_RE.finditer(text)]
+
+
+def strip_internal_placeholder_markup(text: str) -> str:
+    return INTERNAL_PLACEHOLDER_RE.sub("", text)
 
 
 def validate_internal_placeholder_markup(text: str) -> list[str]:

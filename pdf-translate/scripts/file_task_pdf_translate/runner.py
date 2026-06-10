@@ -3,11 +3,12 @@
 
 from __future__ import annotations
 
+import gc
 import json
 import logging
+import re
 import sys
 import traceback
-import gc
 from datetime import datetime
 from pathlib import Path
 
@@ -34,6 +35,10 @@ from .validation import ValidationResult
 from .validation import validate_pending
 
 logger = logging.getLogger(__name__)
+OUTPUT_INTERNAL_MARKER_RE = re.compile(
+    r"</?b\d+>|\{\{(?:FORMULA|PROTECTED)_[0-9]+\}\}",
+    re.IGNORECASE,
+)
 
 
 def advance(workspace: Path | None = None) -> dict:
@@ -115,10 +120,29 @@ def advance(workspace: Path | None = None) -> dict:
             shutdown_file_task_runtime()
 
         output_pdfs, output_pdf = _collect_output_pdfs(result, state["config"])
+        output_errors = _validate_output_pdfs(output_pdfs)
+        if output_errors:
+            state["status"] = "error"
+            state["last_error"] = "; ".join(output_errors)
+            state["pending"] = None
+            write_json(paths.state, state)
+            append_trace(paths, "output_validation_error", errors=output_errors)
+            return {
+                "status": "error",
+                "editable_file": None,
+                "instruction": "Fix the output validation errors reported in validation_errors.",
+                "progress": _progress(state),
+                "validation_errors": output_errors,
+                "validation_warnings": validation.warnings,
+                "trace_tail": trace_tail(paths),
+                "output_pdf": output_pdf,
+                "output_pdfs": output_pdfs,
+            }
         state["status"] = "done"
         state["pending"] = None
         state["output_pdf"] = output_pdf
         state["output_pdfs"] = output_pdfs
+        state.pop("last_error", None)
         write_json(paths.state, state)
         append_trace(paths, "pdf_written", output_pdf=output_pdf, output_pdfs=output_pdfs)
         return {
@@ -354,6 +378,43 @@ def _collect_output_pdfs(result, config: dict) -> tuple[dict[str, str], str | No
     if primary is not None:
         return output_pdfs, primary
     return output_pdfs, next(iter(output_pdfs.values()), None)
+
+
+def _validate_output_pdfs(output_pdfs: dict[str, str]) -> list[str]:
+    if not output_pdfs:
+        return []
+
+    import pymupdf
+
+    errors: list[str] = []
+    for label, path_text in output_pdfs.items():
+        path = Path(path_text)
+        if not path.exists():
+            errors.append(f"{label} output PDF is missing: {path}")
+            continue
+        try:
+            document = pymupdf.open(path)
+            try:
+                text = "\n".join(page.get_text("text") for page in document)
+            finally:
+                document.close()
+        except Exception as exc:
+            errors.append(f"{label} output PDF could not be inspected: {exc}")
+            continue
+
+        leaked_markers = []
+        for match in OUTPUT_INTERNAL_MARKER_RE.finditer(text):
+            marker = match.group(0)
+            if marker not in leaked_markers:
+                leaked_markers.append(marker)
+            if len(leaked_markers) >= 5:
+                break
+        if leaked_markers:
+            errors.append(
+                f"{label} output PDF leaks internal markers: "
+                + ", ".join(leaked_markers)
+            )
+    return errors
 
 
 def _output_path_for(result, watermark: str, output_mode: str):

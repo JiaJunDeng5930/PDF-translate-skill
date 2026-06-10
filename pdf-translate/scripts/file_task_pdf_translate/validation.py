@@ -8,13 +8,14 @@ import unicodedata
 from dataclasses import dataclass
 
 from .editable import EditableBlock
+from .editable import internal_placeholder_markup_tokens
 from .editable import marker_sequence
 from .editable import parse_editable_document
 from .editable import render_editable_document
 from .editable import restore_internal_placeholders
+from .editable import strip_internal_placeholder_markup
 from .editable import token_map_marker_sequence
 from .editable import unknown_marker_sequence
-from .editable import validate_internal_placeholder_markup
 from .state import WorkspacePaths
 from .state import append_trace
 from .state import archive_current_translation
@@ -224,6 +225,13 @@ def _build_translation_answer(
         if not block.translation.strip():
             errors.append(f"translation block {index} is empty")
             continue
+        raw_internal_tags = internal_placeholder_markup_tokens(block.translation)
+        if raw_internal_tags:
+            errors.append(
+                f"translation block {index} contains raw internal tag "
+                f"{raw_internal_tags[0]}; use protected markers from the source"
+            )
+            continue
         expected_markers = snapshot["required_markers"]
         token_map = snapshot.get("token_map", [])
         unknown_markers = unknown_marker_sequence(block.translation, token_map)
@@ -245,13 +253,8 @@ def _build_translation_answer(
             block.translation,
             token_map,
         )
-        markup_errors = validate_internal_placeholder_markup(restored)
-        if markup_errors:
-            errors.extend(
-                f"translation block {index}: {error}" for error in markup_errors
-            )
-            continue
-        answer.append({"id": index - 1, "output": restored})
+        output = strip_internal_placeholder_markup(restored)
+        answer.append({"id": index - 1, "output": output})
     return answer, errors, warnings
 
 

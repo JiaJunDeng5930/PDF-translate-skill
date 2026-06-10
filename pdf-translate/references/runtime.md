@@ -38,7 +38,9 @@ Validation invariants:
 - Translation tasks require every `translation` field to be non-empty.
 - Protected markers render with ASCII braces, for example `{{FORMULA_1}}` and `{{PROTECTED_1}}`.
 - Required protected marker sequences are derived from each block's `token_map` by exact marker scanning.
-- Validation rejects markers outside the `token_map`, inconsistent snapshot marker sequences, duplicate required markers, and restored internal `<bN>` tag imbalance.
+- Validation rejects markers outside the `token_map`, inconsistent snapshot marker sequences, duplicate required markers, and raw internal `<bN>` tags typed into translations.
+- Accepted translation answers restore known markers, then strip internal `<bN>` tags before replaying JSON answers into the PDF pipeline.
+- Completed output PDFs are text-scanned for visible `<bN>`, `</bN>`, `{{FORMULA_N}}`, and `{{PROTECTED_N}}` markers before `state.json` is marked `done`.
 - Term extraction tasks require `terms` to be a YAML list of mappings with
   `source` and `target` fields. Source term matching normalizes PDF line-break
   hyphenation and abnormal whitespace.

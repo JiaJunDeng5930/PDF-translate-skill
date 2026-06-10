@@ -15,7 +15,7 @@ PDF Translate Skill gives coding agents a repeatable workflow for PDF translatio
 - Runs a no-argument `advance.py` loop.
 - Pauses at translation tasks by writing `current_translation.yaml`.
 - Lets the agent fill structured YAML `translation` fields and `terms` lists.
-- Validates YAML structure, protected tokens, restored internal tags, and term extraction output.
+- Validates YAML structure, protected tokens, stripped internal tags, and term extraction output.
 - Replays accepted answers into the internal PDF pipeline.
 - Generates translated PDFs while preserving layout, figures, tables, formulas, page size, and PDF structure as far as the pipeline supports.
 
@@ -96,6 +96,13 @@ Download the PDF pipeline assets into a local directory:
 python pdf-translate/scripts/download_assets.py ./pdf-translate-assets
 ```
 
+Python dependencies and runtime assets are separate setup steps.
+`requirements.txt` installs Python packages such as ONNX Runtime, PyMuPDF, Rtree,
+and HarfBuzz bindings into the active environment. `download_assets.py` prepares
+runtime assets such as the DocLayout model, fonts, CMap files, and tiktoken cache
+under the `asset_dir` used by `pdf_translate.yaml`.
+In short, requirements.txt installs Python packages; download_assets.py prepares runtime assets.
+
 ### Minimal translation workspace
 
 Create a folder containing your source PDF and `pdf_translate.yaml`:
@@ -144,9 +151,10 @@ terms:
     target: target-language term
 ```
 
-`pages` selects which pages are translated. The generated PDF keeps the source
-document page count, and pages outside the selected range are preserved from the
-source PDF.
+`pages` selects which pages are translated. Use `null` for the full document or
+a string range such as `"1-3"` or `"4"` for page-limited runs. The generated PDF
+keeps the source document page count, and pages outside the selected range are
+preserved from the source PDF.
 
 ## Architecture
 
@@ -175,7 +183,7 @@ pdf_translate.yaml
 
 ## Limitations
 
-- Translation quality depends on the agent filling `current_translation.yaml`; runtime validation checks structure, protected tokens, and restored internal tags.
+- Translation quality depends on the agent filling `current_translation.yaml`; runtime validation checks structure and protected tokens, then strips internal PDF tags before replay.
 - The file-task loop is sequential.
 - Output fidelity depends on the internal PDF pipeline and the source PDF structure.
 - Scanned/OCR-heavy PDFs may need pipeline options that are not currently exposed in `pdf_translate.yaml`.

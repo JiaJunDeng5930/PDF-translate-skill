@@ -12,6 +12,7 @@ from babeldoc.translator.translator import BaseTranslator
 
 from .editable import EditableBlock
 from .editable import marker_sequence
+from .editable import normalize_extracted_pdf_text
 from .editable import replace_internal_placeholders
 from .state import WorkspacePaths
 from .state import load_accepted_answer
@@ -87,9 +88,10 @@ class FileTaskTranslator(BaseTranslator):
         blocks = []
         for item in items:
             original_source = item.get("input", "")
+            display_input = normalize_extracted_pdf_text(original_source)
             formula_tokens = set((item.get("formula_placeholders_hint") or {}).keys())
             display_source, token_map = replace_internal_placeholders(
-                original_source,
+                display_input,
                 formula_tokens,
             )
             blocks.append(
@@ -120,7 +122,8 @@ class FileTaskTranslator(BaseTranslator):
     def _term_task_from_chunks(self, chunks: list[str]) -> dict:
         blocks = []
         for chunk in chunks:
-            display_source, token_map = replace_internal_placeholders(chunk)
+            display_input = normalize_extracted_pdf_text(chunk)
+            display_source, token_map = replace_internal_placeholders(display_input)
             blocks.append(
                 {
                     "source": display_source,

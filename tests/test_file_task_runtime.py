@@ -272,6 +272,14 @@ class DependencySpecificationRegressionTests(unittest.TestCase):
 
         self.assertIn("cryptography>=46.0.7,<47", requirements)
 
+    def test_readme_distinguishes_python_dependencies_from_runtime_assets(self) -> None:
+        readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+
+        self.assertIn("Python dependencies", readme)
+        self.assertIn("runtime assets", readme)
+        self.assertIn("requirements.txt installs Python packages", readme)
+        self.assertIn("download_assets.py prepares runtime assets", readme)
+
 
 class OutputSelectionTests(unittest.TestCase):
     def test_output_pdfs_exposes_every_generated_variant_and_primary_path(self) -> None:
@@ -295,6 +303,24 @@ class OutputSelectionTests(unittest.TestCase):
         self.assertNotIn("no_watermark_mono", output_pdfs)
         self.assertEqual(output_pdfs["no_watermark_dual"], "out\\clean.dual.pdf")
         self.assertEqual(primary, "out\\clean.dual.pdf")
+
+    def test_output_pdf_validation_rejects_visible_internal_markers(self) -> None:
+        import pymupdf
+
+        from file_task_pdf_translate.runner import _validate_output_pdfs
+
+        with tempfile.TemporaryDirectory(prefix="pdf-translate-output-leak-test-") as tmp:
+            pdf_path = Path(tmp) / "leak.pdf"
+            doc = pymupdf.open()
+            page = doc.new_page(width=300, height=120)
+            page.insert_text((30, 60), "visible <b1> and {{FORMULA_1}}")
+            doc.save(pdf_path)
+            doc.close()
+
+            errors = _validate_output_pdfs({"no_watermark_mono": str(pdf_path)})
+
+        self.assertTrue(errors)
+        self.assertIn("leaks internal markers", errors[0])
 
 
 class EditableParserRegressionTests(unittest.TestCase):
@@ -422,6 +448,26 @@ items:
             restore_internal_placeholders(display, token_map),
             "<b6></b7>3<b8>",
         )
+
+    def test_extracted_pdf_text_is_normalized_before_editable_tasks(self) -> None:
+        from file_task_pdf_translate.editable import normalize_extracted_pdf_text
+
+        source = (
+            "The (cid:82) sta- bility proof uses measurementsR as a "
+            "proxyfor preservedor whichderived intheAppendix and dog -<b1>lion."
+        )
+
+        normalized = normalize_extracted_pdf_text(source)
+
+        self.assertIn("∫", normalized)
+        self.assertIn("stability", normalized)
+        self.assertIn("measurements R", normalized)
+        self.assertIn("proxy for", normalized)
+        self.assertIn("preserved or", normalized)
+        self.assertIn("which derived", normalized)
+        self.assertIn("in the Appendix", normalized)
+        self.assertIn("dog -> lion", normalized)
+        self.assertNotIn("<b1>", normalized)
 
 
 class TermValidationRegressionTests(unittest.TestCase):
@@ -612,25 +658,26 @@ class EditableYamlWorkflowTests(unittest.TestCase):
         self.assertEqual(result.status, "needs_ai_fix")
         self.assertIn("PROTECTED_34", "\n".join(result.errors))
 
-    def test_translation_validation_rejects_unbalanced_restored_internal_tags(self) -> None:
+    def test_translation_validation_strips_restored_internal_tags(self) -> None:
         from file_task_pdf_translate.editable import EditableBlock
         from file_task_pdf_translate.editable import render_editable_document
         from file_task_pdf_translate.state import ensure_dirs
         from file_task_pdf_translate.state import paths_for
+        from file_task_pdf_translate.state import read_json
         from file_task_pdf_translate.state import write_json
         from file_task_pdf_translate.validation import validate_pending
 
         paths = paths_for(self.tmp)
         ensure_dirs(paths)
-        source = "PROTECTED_1 text"
+        source = "{{PROTECTED_1}} text"
         pending = {
             "task_type": "translate",
-            "task_hash": "unbalanced-marker",
+            "task_hash": "strip-internal-marker",
             "blocks": [
                 {
                     "source": source,
-                    "original_source": "</b1> text",
-                    "token_map": [{"marker": "PROTECTED_1", "token": "</b1>"}],
+                    "original_source": "<b1> text",
+                    "token_map": [{"marker": "PROTECTED_1", "token": "<b1>"}],
                     "required_markers": ["PROTECTED_1"],
                 }
             ],
@@ -648,9 +695,48 @@ class EditableYamlWorkflowTests(unittest.TestCase):
 
         result = validate_pending(paths, state)
 
+        self.assertTrue(result.accepted)
+        accepted = read_json(paths.accepted / "strip-internal-marker.answer.json", None)
+        self.assertEqual(accepted, [{"id": 0, "output": " text"}])
+
+    def test_translation_validation_rejects_raw_internal_tags_in_answer(self) -> None:
+        from file_task_pdf_translate.editable import EditableBlock
+        from file_task_pdf_translate.editable import render_editable_document
+        from file_task_pdf_translate.state import ensure_dirs
+        from file_task_pdf_translate.state import paths_for
+        from file_task_pdf_translate.state import write_json
+        from file_task_pdf_translate.validation import validate_pending
+
+        paths = paths_for(self.tmp)
+        ensure_dirs(paths)
+        pending = {
+            "task_type": "translate",
+            "task_hash": "raw-internal-marker",
+            "blocks": [
+                {
+                    "source": "plain source",
+                    "original_source": "plain source",
+                    "token_map": [],
+                    "required_markers": [],
+                }
+            ],
+        }
+        state = {"pending": pending, "status": "needs_ai_edit", "accepted": {}}
+        write_json(paths.state, state)
+        paths.current_translation.write_text(
+            render_editable_document(
+                "translate",
+                [EditableBlock(source="plain source", translation="plain <b1>")],
+                "zh-CN",
+            ),
+            encoding="utf-8",
+        )
+
+        result = validate_pending(paths, state)
+
         self.assertFalse(result.accepted)
         self.assertEqual(result.status, "needs_ai_fix")
-        self.assertIn("unmatched closing tag", "\n".join(result.errors))
+        self.assertIn("raw internal tag", "\n".join(result.errors))
 
 
 class TranslationSelectionRegressionTests(unittest.TestCase):
@@ -719,6 +805,62 @@ class PdfCompatibilityRegressionTests(unittest.TestCase):
                 self.assertEqual(len(list(reopened[0].annots() or [])), 1)
             finally:
                 reopened.close()
+
+    def test_curve_render_unit_accepts_string_numeric_ctm_and_path_values(self) -> None:
+        from bitstring import BitStream
+
+        from babeldoc.format.pdf.document_il import il_version_1
+        from babeldoc.format.pdf.document_il.backend.pdf_creater import CurveRenderUnit
+
+        curve = il_version_1.PdfCurve(
+            box=il_version_1.Box(x=0, y=0, x2=20, y2=20),
+            graphic_state=il_version_1.GraphicState(
+                passthrough_per_char_instruction="",
+            ),
+            pdf_path=[
+                il_version_1.PdfPath(x="10.5", y="20.25", op="m", has_xy=True),
+                il_version_1.PdfPath(x="15", y="25", op="l", has_xy=True),
+            ],
+            fill_background=False,
+            stroke_path=True,
+            evenodd=False,
+            ctm=["1", "0", "0", "1", "2.5", "3.5"],
+        )
+        draw_op = BitStream()
+
+        CurveRenderUnit(curve, render_order=1).render(draw_op, SimpleNamespace())
+
+        self.assertIn(
+            b"1.000000 0.000000 0.000000 1.000000 2.500000 3.500000 cm",
+            draw_op.bytes,
+        )
+        self.assertIn(b"10.500000 20.250000 m", draw_op.bytes)
+
+    def test_rectangle_render_unit_accepts_string_numeric_values(self) -> None:
+        from bitstring import BitStream
+
+        from babeldoc.format.pdf.document_il import il_version_1
+        from babeldoc.format.pdf.document_il.backend.pdf_creater import (
+            RectangleRenderUnit,
+        )
+
+        rectangle = il_version_1.PdfRectangle(
+            box=il_version_1.Box(x="1", y="2", x2="5", y2="7"),
+            graphic_state=il_version_1.GraphicState(
+                passthrough_per_char_instruction="",
+            ),
+            fill_background=False,
+            line_width="0.2",
+        )
+        draw_op = BitStream()
+
+        RectangleRenderUnit(rectangle, render_order=1).render(
+            draw_op,
+            SimpleNamespace(),
+        )
+
+        self.assertIn(b"0.200000 w", draw_op.bytes)
+        self.assertIn(b"1.000000 2.000000 4.000000 5.000000 re", draw_op.bytes)
 
 
 class WorkspaceLockRegressionTests(unittest.TestCase):
@@ -967,6 +1109,69 @@ add_formula_placehold_hint: true
 
         self.assertEqual(result["status"], "needs_ai_edit")
         cleanup.assert_called_once()
+
+    def test_advance_clears_stale_last_error_after_success(self) -> None:
+        import pymupdf
+
+        from file_task_pdf_translate.config import load_workspace_config
+        from file_task_pdf_translate.runner import advance
+        from file_task_pdf_translate.state import load_or_init_state
+        from file_task_pdf_translate.state import paths_for
+        from file_task_pdf_translate.state import read_json
+        from file_task_pdf_translate.state import write_json
+
+        with tempfile.TemporaryDirectory(prefix="pdf-translate-done-state-test-") as tmp:
+            workspace = Path(tmp)
+            (workspace / "paper.pdf").write_bytes(b"%PDF-1.4\n%%EOF\n")
+            (workspace / "assets").mkdir()
+            (workspace / "pdf_translate.yaml").write_text(
+                """
+input_pdf: paper.pdf
+lang_in: en
+lang_out: zh-CN
+asset_dir: assets
+output_mode: mono
+watermark_output_mode: no_watermark
+auto_extract_glossary: false
+primary_font_family: null
+add_formula_placehold_hint: true
+""".lstrip(),
+                encoding="utf-8",
+            )
+            paths = paths_for(workspace)
+            config = load_workspace_config(workspace)
+            state = load_or_init_state(paths, config.snapshot)
+            state["last_error"] = "old failure"
+            write_json(paths.state, state)
+
+            output_pdf = workspace / "translated.pdf"
+            doc = pymupdf.open()
+            page = doc.new_page(width=300, height=120)
+            page.insert_text((30, 60), "clean output")
+            doc.save(output_pdf)
+            doc.close()
+            translate_result = SimpleNamespace(
+                mono_pdf_path=output_pdf,
+                dual_pdf_path=None,
+                no_watermark_mono_pdf_path=output_pdf,
+                no_watermark_dual_pdf_path=None,
+            )
+
+            with patch(
+                "file_task_pdf_translate.runner.set_runtime_asset_dir",
+                return_value=workspace / "assets",
+            ), patch(
+                "file_task_pdf_translate.runner.translate",
+                return_value=translate_result,
+            ), patch(
+                "file_task_pdf_translate.runner.shutdown_file_task_runtime",
+            ):
+                result = advance(workspace)
+
+            final_state = read_json(paths.state, {})
+
+        self.assertEqual(result["status"], "done")
+        self.assertNotIn("last_error", final_state)
 
 
 if __name__ == "__main__":
