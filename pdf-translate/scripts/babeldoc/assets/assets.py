@@ -650,6 +650,9 @@ def _prepare_tiktoken_assets(asset_dir: Path) -> None:
     tiktoken_dir.mkdir(parents=True, exist_ok=True)
     os.environ["TIKTOKEN_CACHE_DIR"] = str(tiktoken_dir)
 
+    if _asset_group_is_complete(tiktoken_dir, TIKTOKEN_CACHES):
+        return
+
     from tiktoken import encoding_for_model
 
     _ = encoding_for_model("gpt-4o")
@@ -657,6 +660,14 @@ def _prepare_tiktoken_assets(asset_dir: Path) -> None:
         path = tiktoken_dir / file_name
         if not verify_file(path, sha3_256):
             raise AssetError(f"tiktoken asset missing or hash mismatch: {path}")
+
+
+def _asset_group_is_complete(group_dir: Path, metadata: dict[str, dict | str]) -> bool:
+    for file_name, item in metadata.items():
+        sha3_256 = item["sha3_256"] if isinstance(item, dict) else item
+        if not verify_file(group_dir / file_name, sha3_256):
+            return False
+    return True
 
 
 async def _download_doclayout_model_to(
@@ -680,6 +691,9 @@ async def _download_doclayout_model_to(
 
 
 async def _download_fonts_to(asset_dir: Path, client: httpx.AsyncClient) -> None:
+    if _asset_group_is_complete(asset_dir / "fonts", EMBEDDING_FONT_METADATA):
+        return
+
     fastest_upstream, _ = await get_fastest_upstream_for_font(client)
     if fastest_upstream is None:
         raise AssetError("failed to choose a font asset upstream")
@@ -694,6 +708,9 @@ async def _download_fonts_to(asset_dir: Path, client: httpx.AsyncClient) -> None
 
 
 async def _download_cmaps_to(asset_dir: Path, client: httpx.AsyncClient) -> None:
+    if _asset_group_is_complete(asset_dir / "cmap", CMAP_METADATA):
+        return
+
     fastest_upstream, _ = await get_fastest_upstream_for_font(client)
     if fastest_upstream is None:
         raise AssetError("failed to choose a CMap asset upstream")
@@ -711,6 +728,11 @@ async def _download_cmaps_to(asset_dir: Path, client: httpx.AsyncClient) -> None
 
 async def download_runtime_assets_async(output_directory: Path) -> Path:
     asset_dir = Path(output_directory).expanduser().resolve()
+    try:
+        return validate_runtime_asset_dir(asset_dir)
+    except AssetError:
+        pass
+
     for group in ASSET_GROUPS:
         (asset_dir / group).mkdir(parents=True, exist_ok=True)
 

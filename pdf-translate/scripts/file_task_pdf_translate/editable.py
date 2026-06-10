@@ -10,7 +10,7 @@ from typing import Any
 
 import yaml
 
-PROTECTED_TOKEN_RE = re.compile(r"\b(?:FORMULA|PROTECTED)_[0-9]+\b")
+PROTECTED_TOKEN_RE = re.compile(r"(?:FORMULA|PROTECTED)_[0-9]+")
 INTERNAL_PLACEHOLDER_RE = re.compile(r"</?b\d+>", re.IGNORECASE)
 
 

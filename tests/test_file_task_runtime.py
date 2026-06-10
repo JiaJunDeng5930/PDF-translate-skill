@@ -10,6 +10,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 from unittest.mock import patch
 
 
@@ -226,6 +227,42 @@ class RuntimeAssetTests(unittest.TestCase):
         self.assertEqual(asset_dir, self.tmp.resolve())
         self.assertEqual(os.environ["TIKTOKEN_CACHE_DIR"], str(self.tmp / "tiktoken"))
 
+    def test_download_runtime_assets_reuses_existing_valid_directory_offline(self) -> None:
+        from babeldoc.assets.assets import download_runtime_assets
+
+        payload = b"asset"
+        digest = hashlib.sha3_256(payload).hexdigest()
+        for group in ("models", "fonts", "cmap", "tiktoken"):
+            (self.tmp / group).mkdir()
+        (self.tmp / "models" / "model.onnx").write_bytes(payload)
+        manifest = {
+            "models": [{"name": "model.onnx", "sha3_256": digest}],
+            "fonts": [],
+            "cmap": [],
+            "tiktoken": [],
+        }
+        (self.tmp / "manifest.json").write_text(
+            json.dumps(manifest, indent=2) + "\n",
+            encoding="utf-8",
+        )
+
+        with patch(
+            "babeldoc.assets.assets.generate_all_assets_file_list",
+            return_value=manifest,
+        ), patch(
+            "babeldoc.assets.assets._download_doclayout_model_to",
+            new=AsyncMock(side_effect=AssertionError("network path used")),
+        ), patch(
+            "babeldoc.assets.assets._download_fonts_to",
+            new=AsyncMock(side_effect=AssertionError("network path used")),
+        ), patch(
+            "babeldoc.assets.assets._download_cmaps_to",
+            new=AsyncMock(side_effect=AssertionError("network path used")),
+        ):
+            asset_dir = download_runtime_assets(self.tmp)
+
+        self.assertEqual(asset_dir, self.tmp.resolve())
+
 
 class OutputSelectionTests(unittest.TestCase):
     def test_output_pdfs_exposes_every_generated_variant_and_primary_path(self) -> None:
@@ -337,6 +374,34 @@ items:
         )
         self.assertNotIn("[[", display)
         self.assertNotIn("⟦", display)
+
+
+    def test_protected_tokens_are_detected_when_adjacent_to_text(self) -> None:
+        from file_task_pdf_translate.editable import marker_sequence
+        from file_task_pdf_translate.editable import restore_internal_placeholders
+
+        self.assertEqual(
+            marker_sequence("Liangsi LuFORMULA_1Xuhang Chen"),
+            ["FORMULA_1"],
+        )
+        self.assertEqual(
+            marker_sequence("FORMULA_1PROTECTED_1Corresponding author"),
+            ["FORMULA_1", "PROTECTED_1"],
+        )
+        self.assertEqual(
+            marker_sequence(" PROTECTED_1ChordEditPROTECTED_2,"),
+            ["PROTECTED_1", "PROTECTED_2"],
+        )
+        self.assertEqual(
+            restore_internal_placeholders(
+                "FORMULA_1PROTECTED_1Corresponding author",
+                [
+                    {"marker": "FORMULA_1", "token": "<b0>"},
+                    {"marker": "PROTECTED_1", "token": "<b1>"},
+                ],
+            ),
+            "<b0><b1>Corresponding author",
+        )
 
 
 class TermValidationRegressionTests(unittest.TestCase):
@@ -527,6 +592,108 @@ class PdfCompatibilityRegressionTests(unittest.TestCase):
             normalized,
             b"0 0 500 700 0 0 d1\nq\n0 0 m 10 10 l S\nQ\n",
         )
+
+    def test_fix_null_xref_preserves_page_annotations(self) -> None:
+        import pymupdf
+
+        from babeldoc.format.pdf.high_level import fix_null_xref
+
+        with tempfile.TemporaryDirectory(prefix="pdf-translate-annot-test-") as tmp:
+            pdf_path = Path(tmp) / "annotated.pdf"
+            doc = pymupdf.open()
+            page = doc.new_page(width=200, height=200)
+            page.add_text_annot(pymupdf.Point(40, 40), "note")
+            doc.save(pdf_path)
+            doc.close()
+
+            reopened = pymupdf.open(pdf_path)
+            try:
+                self.assertEqual(len(list(reopened[0].annots() or [])), 1)
+
+                fix_null_xref(reopened)
+
+                self.assertEqual(len(list(reopened[0].annots() or [])), 1)
+            finally:
+                reopened.close()
+
+
+class WorkspaceLockRegressionTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp(prefix="pdf-translate-lock-test-"))
+        self.addCleanup(lambda: shutil.rmtree(self.tmp, ignore_errors=True))
+
+    def test_advance_reports_active_lock_as_structured_status(self) -> None:
+        from file_task_pdf_translate.runner import advance
+        from file_task_pdf_translate.state import ensure_dirs
+        from file_task_pdf_translate.state import paths_for
+        from file_task_pdf_translate.state import write_lock_metadata
+
+        paths = paths_for(self.tmp)
+        ensure_dirs(paths)
+        write_lock_metadata(paths)
+
+        result = advance(self.tmp)
+
+        self.assertEqual(result["status"], "locked")
+        self.assertIn("advance lock", result["validation_errors"][0])
+
+    def test_advance_recovers_stale_lock_for_missing_process(self) -> None:
+        from file_task_pdf_translate.runner import advance
+        from file_task_pdf_translate.state import ensure_dirs
+        from file_task_pdf_translate.state import paths_for
+        from file_task_pdf_translate.state import write_json
+
+        paths = paths_for(self.tmp)
+        ensure_dirs(paths)
+        write_json(
+            paths.lock,
+            {
+                "pid": 99999999,
+                "created_at": "2000-01-01T00:00:00",
+                "created_at_epoch": 946684800.0,
+                "workspace": str(self.tmp),
+            },
+        )
+
+        result = advance(self.tmp)
+
+        self.assertEqual(result["status"], "config_error")
+        self.assertFalse(paths.lock.exists())
+
+
+class ProgressPersistenceRegressionTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp(prefix="pdf-translate-progress-test-"))
+        self.addCleanup(lambda: shutil.rmtree(self.tmp, ignore_errors=True))
+
+    def test_progress_callback_persists_latest_stage(self) -> None:
+        from file_task_pdf_translate.runner import _record_pipeline_progress
+        from file_task_pdf_translate.state import ensure_dirs
+        from file_task_pdf_translate.state import paths_for
+        from file_task_pdf_translate.state import read_json
+        from file_task_pdf_translate.state import write_json
+
+        paths = paths_for(self.tmp)
+        ensure_dirs(paths)
+        write_json(paths.state, {"status": "running", "accepted": {}})
+
+        _record_pipeline_progress(
+            paths,
+            {
+                "type": "progress_update",
+                "stage": "Parse Page Layout",
+                "stage_progress": 25.0,
+                "stage_current": 1,
+                "stage_total": 4,
+                "overall_progress": 12.5,
+                "part_index": 1,
+                "total_parts": 1,
+            },
+        )
+
+        state = read_json(paths.state, None)
+        self.assertEqual(state["pipeline_progress"]["stage"], "Parse Page Layout")
+        self.assertEqual(state["pipeline_progress"]["stage_current"], 1)
 
 
 class ProcessExitRegressionTests(unittest.TestCase):

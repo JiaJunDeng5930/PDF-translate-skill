@@ -7,6 +7,7 @@ import json
 import logging
 import sys
 import traceback
+from datetime import datetime
 from pathlib import Path
 
 from babeldoc.assets.assets import AssetError
@@ -36,7 +37,10 @@ logger = logging.getLogger(__name__)
 def advance(workspace: Path | None = None) -> dict:
     root = (workspace or Path.cwd()).resolve()
     paths = paths_for(root)
-    with workspace_lock(paths):
+    with workspace_lock(paths) as lock_error:
+        if lock_error is not None:
+            return _lock_error_response(paths, lock_error)
+
         try:
             workspace_config = load_workspace_config(root)
         except ConfigError as exc:
@@ -70,6 +74,9 @@ def advance(workspace: Path | None = None) -> dict:
         translator = FileTaskTranslator(paths, state)
         config = _build_translation_config(paths, state, translator)
         config.file_task_workflow = True
+        config.progress_change_callback = (
+            lambda **event: _record_pipeline_progress(paths, event)
+        )
 
         try:
             result = translate(config)
@@ -147,6 +154,7 @@ def _build_translation_config(
         add_formula_placehold_hint=config["add_formula_placehold_hint"],
         auto_extract_glossary=config["auto_extract_glossary"],
         primary_font_family=config["primary_font_family"],
+        report_interval=2.0,
     )
 
 
@@ -207,7 +215,36 @@ def _progress(state: dict) -> dict:
         "input_pdf": state.get("input_pdf"),
         "config_hash": state.get("config_hash"),
         "asset_dir": (state.get("config") or {}).get("asset_dir"),
+        "pipeline_progress": state.get("pipeline_progress"),
     }
+
+
+def _record_pipeline_progress(paths, event: dict) -> None:
+    state = read_json(paths.state, None)
+    if state is None:
+        return
+
+    event_type = event.get("type")
+    if event_type == "stage_summary":
+        state["pipeline_stages"] = event.get("stages", [])
+        write_json(paths.state, state)
+        return
+
+    progress = {
+        "event_type": event_type,
+        "stage": event.get("stage"),
+        "stage_progress": event.get("stage_progress"),
+        "stage_current": event.get("stage_current"),
+        "stage_total": event.get("stage_total"),
+        "overall_progress": event.get("overall_progress"),
+        "part_index": event.get("part_index"),
+        "total_parts": event.get("total_parts"),
+        "updated_at": datetime.now().isoformat(timespec="seconds"),
+    }
+    state["pipeline_progress"] = progress
+    write_json(paths.state, state)
+    if event_type in {"progress_start", "progress_end"}:
+        append_trace(paths, "pipeline_progress", **progress)
 
 
 def _config_drift_error(state: dict, current_config: dict) -> str | None:
@@ -266,6 +303,23 @@ def _asset_error_response(paths, error: str, state: dict | None) -> dict:
     }
 
 
+def _lock_error_response(paths, error) -> dict:
+    state = read_json(paths.state, {}) or {}
+    return {
+        "status": "locked",
+        "editable_file": str(paths.current_translation)
+        if paths.current_translation.exists()
+        else None,
+        "instruction": "Another advance process is running. Wait for it to finish, then run advance again.",
+        "progress": _progress(state),
+        "validation_errors": [str(error)],
+        "validation_warnings": [],
+        "trace_tail": trace_tail(paths),
+        "output_pdf": state.get("output_pdf"),
+        "output_pdfs": state.get("output_pdfs", {}),
+    }
+
+
 def _collect_output_pdfs(result, config: dict) -> tuple[dict[str, str], str | None]:
     output_pdfs: dict[str, str] = {}
     output_modes = (
@@ -317,5 +371,5 @@ def main() -> int:
     )
     result = advance()
     print(json.dumps(result, ensure_ascii=False, indent=2))
-    error_statuses = {"error", "config_error", "asset_error"}
+    error_statuses = {"error", "config_error", "asset_error", "locked"}
     return 0 if result.get("status") not in error_statuses else 1

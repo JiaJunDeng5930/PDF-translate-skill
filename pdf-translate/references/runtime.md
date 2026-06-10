@@ -18,8 +18,11 @@ Translation-stage state:
 - `.pdf_translate/accepted_answers/`: accepted editable files and JSON answers replayed into the internal PDF pipeline.
 - `.pdf_translate/rejected_answers/`: damaged editable files archived before template restoration.
 - `.pdf_translate/trace.jsonl`: compact config, progress, validation, answer, and output events.
+- `.pdf_translate/advance.lock`: PID and timestamp metadata for the active advance process. A live PID returns `locked`; a missing PID is recovered as stale and traced before the run continues.
 
 The runtime re-enters the internal PDF pipeline from the beginning on each advance and replays accepted answers by stable task hash. This keeps the workflow resumable while keeping checkpoints program-owned.
+
+The synchronous BabelDOC progress monitor writes the latest pipeline stage into `state.json` as `pipeline_progress`. Stage starts and ends are also recorded in `trace.jsonl`, so long preprocessing runs expose their current stage even before a pending AI task exists.
 
 The BabelDOC-derived pipeline files with file-task changes are:
 
@@ -40,9 +43,12 @@ Validation invariants:
 
 PDF generation is owned by the internal pipeline: `high_level.translate()` runs layout parsing, paragraph finding, styles/formulas, term extraction, IL translation, typesetting, font mapping, and PDF creation.
 
+The PDF preprocessing path preserves page annotations and links. Normalization helpers may rewrite streams and xrefs, but `/Annots` entries remain attached to their pages.
+
 Runtime assets are prepared outside translation:
 
 - `scripts/download_assets.py <asset-dir>` downloads the DocLayout ONNX model, fonts, CMap files, and tiktoken cache into the configured directory.
 - `manifest.json` records the expected asset names and SHA3-256 hashes.
+- If `<asset-dir>` already validates against `manifest.json`, `download_assets.py` returns without contacting upstreams. Individual model, font, CMap, and tiktoken groups also skip upstream selection when every expected file already matches its hash.
 - `advance` activates the frozen `asset_dir`, validates `manifest.json` and every required file, then runs the PDF pipeline.
 - After `asset_dir` is active, the BabelDOC-derived asset loader reads local files and raises `AssetError` for missing or damaged assets.

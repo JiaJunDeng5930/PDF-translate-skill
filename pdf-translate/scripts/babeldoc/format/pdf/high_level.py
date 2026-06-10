@@ -274,7 +274,15 @@ def translator_supports_llm(translator) -> bool:
 
 
 def translate(translation_config: TranslationConfig) -> TranslateResult:
-    with ProgressMonitor(get_translation_stage(translation_config)) as pm:
+    with ProgressMonitor(
+        get_translation_stage(translation_config),
+        progress_change_callback=getattr(
+            translation_config,
+            "progress_change_callback",
+            None,
+        ),
+        report_interval=translation_config.report_interval,
+    ) as pm:
         return do_translate(pm, translation_config)
 
 
@@ -484,8 +492,6 @@ def fix_null_xref(doc: Document) -> None:
             elif obj and "/LZWDecode" in obj:
                 data = doc.xref_stream(i)
                 doc.update_stream(i, data)
-            elif obj and "/Annots" in obj:
-                doc.xref_set_key(i, "Annots", "null")
         except Exception:
             doc.update_object(i, "[]")
 
@@ -639,17 +645,6 @@ def do_translate(
                                 part_config.input_file = part_temp_input_path
 
                                 temp_doc = Document()
-                                for x in range(
-                                    split_point.start_page, split_point.end_page + 1
-                                ):
-                                    xref = original_doc[x].xref
-                                    if (
-                                        original_doc.xref_get_key(xref, "Annots")[0]
-                                        != "null"
-                                    ):
-                                        original_doc.xref_set_key(
-                                            xref, "Annots", "null"
-                                        )
                                 temp_doc.insert_pdf(
                                     original_doc,
                                     from_page=split_point.start_page,
