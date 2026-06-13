@@ -285,7 +285,8 @@ def _build_term_answer(
                 continue
             if not _source_contains_term(source_text, original_source, source):
                 errors.append(
-                    f"block {index}: source term does not occur in the source text: {source}"
+                    f"block {index}: source term must be an exact contiguous source "
+                    f"span after PDF text normalization: {source}"
                 )
                 continue
             source_key = _term_conflict_key(source)

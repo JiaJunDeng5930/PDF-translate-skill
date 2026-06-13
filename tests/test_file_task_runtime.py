@@ -20,6 +20,20 @@ if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 
 
+def write_test_pdf(path: Path, texts: list[str] | None = None) -> None:
+    import pymupdf
+
+    page_texts = texts or ["test page"]
+    doc = pymupdf.open()
+    try:
+        for text in page_texts:
+            page = doc.new_page(width=300, height=160)
+            page.insert_text((30, 80), text)
+        doc.save(path)
+    finally:
+        doc.close()
+
+
 class RuntimeConfigTests(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = Path(tempfile.mkdtemp(prefix="pdf-translate-test-"))
@@ -363,6 +377,248 @@ class OutputSelectionTests(unittest.TestCase):
         self.assertIn("leaks internal markers", errors[0])
 
 
+class PagePlanRegressionTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp(prefix="pdf-translate-page-plan-test-"))
+        self.addCleanup(lambda: shutil.rmtree(self.tmp, ignore_errors=True))
+
+    def test_page_plan_tracks_target_active_and_completed_pages(self) -> None:
+        from file_task_pdf_translate.state import ensure_page_plan
+        from file_task_pdf_translate.state import mark_active_page_completed
+
+        state = {"config": {"pages": None}}
+
+        changed = ensure_page_plan(state, 3)
+
+        self.assertTrue(changed)
+        self.assertEqual(state["page_plan"]["target_pages"], [1, 2, 3])
+        self.assertEqual(state["page_plan"]["active_page"], 1)
+        self.assertEqual(state["page_plan"]["completed_pages"], [])
+
+        completed, next_page = mark_active_page_completed(state)
+
+        self.assertEqual(completed, 1)
+        self.assertEqual(next_page, 2)
+        self.assertEqual(state["page_plan"]["active_page"], 2)
+        self.assertEqual(state["page_plan"]["completed_pages"], [1])
+
+    def test_single_page_shard_config_uses_active_page_and_private_output_dir(self) -> None:
+        from file_task_pdf_translate.runner import _build_translation_config
+        from file_task_pdf_translate.state import paths_for
+        from file_task_pdf_translate.translator import FileTaskTranslator
+
+        source_pdf = self.tmp / "paper.pdf"
+        write_test_pdf(source_pdf, ["page 1", "page 2", "page 3"])
+        paths = paths_for(self.tmp)
+        state = {
+            "config": {
+                "input_pdf": str(source_pdf),
+                "lang_in": "en",
+                "lang_out": "zh-CN",
+                "pages": None,
+                "output_mode": "mono",
+                "watermark_output_mode": "no_watermark",
+                "auto_extract_glossary": False,
+                "primary_font_family": None,
+                "add_formula_placehold_hint": True,
+            },
+            "page_plan": {
+                "source_page_count": 3,
+                "target_pages": [1, 2, 3],
+                "active_page": 2,
+                "completed_pages": [1],
+            },
+        }
+        translator = FileTaskTranslator(paths, state)
+
+        with patch(
+            "babeldoc.docvision.doclayout.DocLayoutModel.load_available",
+            return_value=object(),
+        ):
+            config = _build_translation_config(paths, state, translator)
+
+        self.assertEqual(config.pages, "2")
+        self.assertEqual(config.page_ranges, [(2, 2)])
+        self.assertEqual(Path(config.output_dir), paths.page_outputs / "page_0002")
+        self.assertEqual(
+            Path(config.working_dir),
+            paths.working / "page_0002" / "paper",
+        )
+
+    def test_page_output_merge_replaces_only_active_page(self) -> None:
+        import pymupdf
+
+        from file_task_pdf_translate.runner import _merge_page_output_pdfs
+        from file_task_pdf_translate.state import ensure_dirs
+        from file_task_pdf_translate.state import paths_for
+
+        paths = paths_for(self.tmp)
+        ensure_dirs(paths)
+        source_pdf = self.tmp / "paper.pdf"
+        shard_pdf = self.tmp / "shard.pdf"
+        write_test_pdf(source_pdf, ["original page one", "original page two", "original page three"])
+        write_test_pdf(shard_pdf, ["wrong page one", "translated page two", "wrong page three"])
+        state = {
+            "config": {
+                "input_pdf": str(source_pdf),
+                "output_mode": "mono",
+                "watermark_output_mode": "no_watermark",
+            },
+            "page_plan": {
+                "source_page_count": 3,
+                "target_pages": [2],
+                "active_page": 2,
+                "completed_pages": [],
+            },
+            "output_pdfs": {},
+        }
+
+        output_pdfs, primary = _merge_page_output_pdfs(
+            paths,
+            state,
+            {"no_watermark_mono": str(shard_pdf)},
+        )
+
+        self.assertEqual(primary, output_pdfs["no_watermark_mono"])
+        merged = pymupdf.open(primary)
+        try:
+            page_texts = [page.get_text("text") for page in merged]
+        finally:
+            merged.close()
+        self.assertIn("original page one", page_texts[0])
+        self.assertIn("translated page two", page_texts[1])
+        self.assertIn("original page three", page_texts[2])
+        self.assertNotIn("wrong page one", page_texts[0])
+        self.assertNotIn("wrong page three", page_texts[2])
+
+    def test_progress_snapshot_reports_business_page_cursor(self) -> None:
+        from file_task_pdf_translate.runner import _record_pipeline_progress
+        from file_task_pdf_translate.state import ensure_dirs
+        from file_task_pdf_translate.state import paths_for
+        from file_task_pdf_translate.state import read_json
+        from file_task_pdf_translate.state import write_json
+
+        paths = paths_for(self.tmp)
+        ensure_dirs(paths)
+        write_json(
+            paths.state,
+            {
+                "status": "running",
+                "page_plan": {
+                    "source_page_count": 3,
+                    "target_pages": [1, 2, 3],
+                    "active_page": 2,
+                    "completed_pages": [1],
+                },
+            },
+        )
+
+        _record_pipeline_progress(
+            paths,
+            {
+                "type": "progress_update",
+                "stage": "Parse Page Layout",
+                "stage_progress": 50.0,
+                "stage_current": 1,
+                "stage_total": 1,
+                "overall_progress": 25.0,
+                "part_index": 1,
+                "total_parts": 1,
+            },
+        )
+
+        progress = read_json(paths.progress, None)
+        self.assertEqual(progress["page_plan"]["active_page"], 2)
+        self.assertEqual(progress["page_progress"]["completed_count"], 1)
+        self.assertEqual(progress["page_progress"]["overall_progress"], 50.0)
+        self.assertEqual(progress["stage_total"], 3)
+        self.assertEqual(progress["shard_stage_total"], 1)
+
+    def test_progress_response_does_not_reannotate_page_snapshot(self) -> None:
+        from file_task_pdf_translate.runner import _progress
+        from file_task_pdf_translate.runner import _record_pipeline_progress
+        from file_task_pdf_translate.state import ensure_dirs
+        from file_task_pdf_translate.state import paths_for
+        from file_task_pdf_translate.state import write_json
+
+        paths = paths_for(self.tmp)
+        ensure_dirs(paths)
+        state = {
+            "status": "needs_ai_edit",
+            "page_plan": {
+                "source_page_count": 3,
+                "target_pages": [1, 2, 3],
+                "active_page": 2,
+                "completed_pages": [1],
+            },
+        }
+        write_json(paths.state, state)
+        _record_pipeline_progress(
+            paths,
+            {
+                "type": "progress_paused",
+                "stage": "Translate Paragraphs",
+                "stage_progress": 50.0,
+                "stage_current": 1,
+                "stage_total": 2,
+                "overall_progress": 50.0,
+                "part_index": 1,
+                "total_parts": 1,
+            },
+        )
+
+        progress = _progress(paths, state)
+
+        self.assertEqual(progress["page_progress"]["active_page_progress"], 50.0)
+        self.assertEqual(progress["page_progress"]["overall_progress"], 50.0)
+        self.assertEqual(
+            progress["pipeline_progress"]["page_progress"]["active_page_progress"],
+            50.0,
+        )
+        self.assertEqual(progress["pipeline_progress"]["shard_stage_total"], 2)
+
+    def test_single_target_page_progress_reports_one_page_total(self) -> None:
+        from file_task_pdf_translate.runner import _record_pipeline_progress
+        from file_task_pdf_translate.state import ensure_dirs
+        from file_task_pdf_translate.state import paths_for
+        from file_task_pdf_translate.state import read_json
+        from file_task_pdf_translate.state import write_json
+
+        paths = paths_for(self.tmp)
+        ensure_dirs(paths)
+        write_json(
+            paths.state,
+            {
+                "status": "needs_ai_edit",
+                "page_plan": {
+                    "source_page_count": 33,
+                    "target_pages": [1],
+                    "active_page": 1,
+                    "completed_pages": [],
+                },
+            },
+        )
+
+        _record_pipeline_progress(
+            paths,
+            {
+                "type": "progress_paused",
+                "stage": "Automatic Term Extraction",
+                "stage_progress": 39.0,
+                "stage_current": 13,
+                "stage_total": 33,
+                "overall_progress": 39.0,
+                "part_index": 1,
+                "total_parts": 1,
+            },
+        )
+
+        progress = read_json(paths.progress, None)
+        self.assertEqual(progress["stage_total"], 1)
+        self.assertEqual(progress["shard_stage_total"], 33)
+        self.assertEqual(progress["page_progress"]["target_total"], 1)
+
+
 class EditableParserRegressionTests(unittest.TestCase):
     def test_empty_multi_item_translation_yaml_remains_distinct_items(self) -> None:
         from file_task_pdf_translate.editable import EditableBlock
@@ -482,6 +738,25 @@ items:
         self.assertIn("dog -> lion", normalized)
         self.assertNotIn("<b1>", normalized)
 
+    def test_author_affiliation_boundaries_are_structurally_separated(self) -> None:
+        from file_task_pdf_translate.editable import normalize_extracted_pdf_text
+
+        source = (
+            "Minzhe Guo1,Shichu Li3,Jingchao Wang4,Yang Shi1†"
+            "1Guangdong University of Technology2Huizhou University"
+            "3Shenzhen University4Peking University"
+        )
+
+        normalized = normalize_extracted_pdf_text(source)
+
+        self.assertIn("Guo 1, Shichu", normalized)
+        self.assertIn("Li 3, Jingchao", normalized)
+        self.assertIn("Wang 4, Yang", normalized)
+        self.assertIn("1 Guangdong University", normalized)
+        self.assertIn("Technology 2 Huizhou University", normalized)
+        self.assertIn("University 3 Shenzhen University", normalized)
+        self.assertIn("University 4 Peking University", normalized)
+
 
 class TermValidationRegressionTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -559,6 +834,61 @@ class TermValidationRegressionTests(unittest.TestCase):
                 {"src": "real-time editing", "tgt": "realtime editing"},
             ],
         )
+
+    def test_term_source_matching_reports_contiguous_span_contract(self) -> None:
+        from file_task_pdf_translate.editable import EditableBlock
+        from file_task_pdf_translate.editable import TermPair
+        from file_task_pdf_translate.editable import render_editable_document
+        from file_task_pdf_translate.state import ensure_dirs
+        from file_task_pdf_translate.state import pending_snapshot_path
+        from file_task_pdf_translate.state import paths_for
+        from file_task_pdf_translate.state import write_json
+        from file_task_pdf_translate.validation import validate_pending
+
+        paths = paths_for(self.tmp)
+        ensure_dirs(paths)
+        source = "We compare the source and target distributions."
+        pending = {
+            "task_type": "term_extract",
+            "task_hash": "terms-contiguous-contract",
+            "blocks": [
+                {
+                    "source": source,
+                    "original_source": source,
+                    "required_placeholders": [],
+                }
+            ],
+        }
+        state = {
+            "pending_task_hash": pending["task_hash"],
+            "status": "needs_ai_edit",
+        }
+        write_json(pending_snapshot_path(paths, pending["task_hash"]), pending)
+        write_json(paths.state, state)
+        paths.current_translation.write_text(
+            render_editable_document(
+                "term_extract",
+                [
+                    EditableBlock(
+                        source=source,
+                        terms=[
+                            TermPair(
+                                source="source distribution",
+                                target="源分布",
+                            )
+                        ],
+                    )
+                ],
+                "zh-CN",
+            ),
+            encoding="utf-8",
+        )
+
+        result = validate_pending(paths, state)
+
+        self.assertFalse(result.accepted)
+        self.assertEqual(result.status, "needs_ai_fix")
+        self.assertIn("exact contiguous source span", "\n".join(result.errors))
 
 
 class EditableYamlWorkflowTests(unittest.TestCase):
@@ -1021,7 +1351,7 @@ class PreprocessCacheRegressionTests(unittest.TestCase):
         self.tmp = Path(tempfile.mkdtemp(prefix="pdf-translate-cache-test-"))
         self.addCleanup(lambda: shutil.rmtree(self.tmp, ignore_errors=True))
 
-    def test_file_task_preprocess_cache_restores_latest_saved_stage(self) -> None:
+    def test_file_task_preprocess_cache_is_disabled_for_file_task_workflow(self) -> None:
         from babeldoc.format.pdf.high_level import _load_file_task_preprocess_cache
         from babeldoc.format.pdf.high_level import _save_file_task_preprocess_cache
 
@@ -1039,7 +1369,10 @@ class PreprocessCacheRegressionTests(unittest.TestCase):
         )
 
         class Converter:
+            wrote_xml = False
+
             def write_xml(self, document, path):
+                self.wrote_xml = True
                 Path(path).write_text(document["payload"], encoding="utf-8")
 
             def read_xml(self, path):
@@ -1057,11 +1390,9 @@ class PreprocessCacheRegressionTests(unittest.TestCase):
 
         cached = _load_file_task_preprocess_cache(config, converter)
 
-        self.assertIsNotNone(cached)
-        self.assertEqual(cached["stage"], "styles_and_formulas")
-        self.assertEqual(cached["docs"], {"payload": "cached-docs"})
-        self.assertEqual(cached["mediabox_data"], {7: {"MediaBox": "[0 0 100 100]"}})
-        self.assertEqual(cached["temp_pdf_path"].read_bytes(), b"normalized-pdf")
+        self.assertIsNone(cached)
+        self.assertFalse(converter.wrote_xml)
+        self.assertFalse((config.working_dir / "file_task_preprocess_cache").exists())
 
 
 class ProcessExitRegressionTests(unittest.TestCase):
@@ -1097,7 +1428,7 @@ with ThreadPoolExecutor(max_workers=1) as executor:
 
         with tempfile.TemporaryDirectory(prefix="pdf-translate-exit-test-") as tmp:
             workspace = Path(tmp)
-            (workspace / "paper.pdf").write_bytes(b"%PDF-1.4\n%%EOF\n")
+            write_test_pdf(workspace / "paper.pdf")
             (workspace / "assets").mkdir()
             (workspace / "pdf_translate.yaml").write_text(
                 """
@@ -1169,7 +1500,7 @@ add_formula_placehold_hint: true
 
         with tempfile.TemporaryDirectory(prefix="pdf-translate-done-state-test-") as tmp:
             workspace = Path(tmp)
-            (workspace / "paper.pdf").write_bytes(b"%PDF-1.4\n%%EOF\n")
+            write_test_pdf(workspace / "paper.pdf")
             (workspace / "assets").mkdir()
             (workspace / "pdf_translate.yaml").write_text(
                 """

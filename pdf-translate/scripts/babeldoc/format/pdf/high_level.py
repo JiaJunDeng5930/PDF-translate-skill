@@ -10,7 +10,6 @@ import asyncio
 import copy
 import hashlib
 import io
-import json
 import logging
 import pathlib
 import re
@@ -84,16 +83,6 @@ TRANSLATE_STAGES = [
     (SUBSET_FONT_STAGE_NAME, 0.92),  # Subset font
     (SAVE_PDF_STAGE_NAME, 6.34),  # Save PDF
 ]
-
-FILE_TASK_PREPROCESS_CACHE_VERSION = 1
-FILE_TASK_PREPROCESS_CACHE_STAGES = (
-    "create_il",
-    "detect_scanned_file",
-    "layout_generator",
-    "table_parser",
-    "paragraph_finder",
-    "styles_and_formulas",
-)
 
 resfont_map = {
     "zh-cn": "china-ss",
@@ -271,46 +260,6 @@ def verify_file_hash(file_path: str, expected_hash: str) -> bool:
     return sha256_hash.hexdigest() == expected_hash
 
 
-def _sha256_file(path: str | Path) -> str:
-    sha256_hash = hashlib.sha256()
-    with Path(path).open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            sha256_hash.update(chunk)
-    return sha256_hash.hexdigest()
-
-
-def _file_task_preprocess_cache_enabled(translation_config: TranslationConfig) -> bool:
-    return (
-        bool(getattr(translation_config, "file_task_workflow", False))
-        and not translation_config.only_parse_generate_pdf
-        and not translation_config.split_strategy
-    )
-
-
-def _file_task_preprocess_cache_dir(translation_config: TranslationConfig) -> Path:
-    return Path(translation_config.working_dir) / "file_task_preprocess_cache"
-
-
-def _file_task_preprocess_cache_identity(
-    translation_config: TranslationConfig,
-) -> dict[str, Any]:
-    source_pdf = Path(translation_config.input_file)
-    return {
-        "cache_key": getattr(translation_config, "file_task_preprocess_cache_key", None),
-        "source_pdf": str(source_pdf.resolve()),
-        "source_pdf_sha256": _sha256_file(source_pdf),
-    }
-
-
-def _atomic_write_json(path: Path, data: dict) -> None:
-    tmp_path = path.with_name(f"{path.name}.tmp")
-    tmp_path.write_text(
-        json.dumps(data, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
-    )
-    tmp_path.replace(path)
-
-
 def _save_file_task_preprocess_cache(
     translation_config: TranslationConfig,
     xml_converter: XMLConverter,
@@ -319,87 +268,18 @@ def _save_file_task_preprocess_cache(
     docs,
     mediabox_data: dict,
 ) -> None:
-    if not _file_task_preprocess_cache_enabled(translation_config):
-        return
-    if stage not in FILE_TASK_PREPROCESS_CACHE_STAGES:
-        raise ValueError(f"unknown file-task preprocess cache stage: {stage}")
-
-    cache_dir = _file_task_preprocess_cache_dir(translation_config)
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    temp_pdf_cache_path = cache_dir / "input.pdf"
-    source_temp_pdf = Path(temp_pdf_path)
-    if source_temp_pdf.resolve() != temp_pdf_cache_path.resolve():
-        temp_pdf_tmp_path = temp_pdf_cache_path.with_name("input.pdf.tmp")
-        shutil.copy2(source_temp_pdf, temp_pdf_tmp_path)
-        temp_pdf_tmp_path.replace(temp_pdf_cache_path)
-
-    xml_path = cache_dir / f"{stage}.xml"
-    xml_tmp_path = xml_path.with_name(f"{xml_path.name}.tmp")
-    xml_converter.write_xml(docs, xml_tmp_path)
-    xml_tmp_path.replace(xml_path)
-    mediabox_path = cache_dir / "mediabox.json"
-    _atomic_write_json(
-        mediabox_path,
-        {str(xref): boxes for xref, boxes in mediabox_data.items()},
-    )
-    manifest = {
-        "version": FILE_TASK_PREPROCESS_CACHE_VERSION,
-        "stage": stage,
-        "xml_file": xml_path.name,
-        "temp_pdf_file": temp_pdf_cache_path.name,
-        "mediabox_file": mediabox_path.name,
-        **_file_task_preprocess_cache_identity(translation_config),
-    }
-    _atomic_write_json(cache_dir / "manifest.json", manifest)
+    return
 
 
 def _load_file_task_preprocess_cache(
     translation_config: TranslationConfig,
     xml_converter: XMLConverter,
 ) -> dict[str, Any] | None:
-    if not _file_task_preprocess_cache_enabled(translation_config):
-        return None
-
-    cache_dir = _file_task_preprocess_cache_dir(translation_config)
-    manifest_path = cache_dir / "manifest.json"
-    try:
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    except Exception:
-        return None
-
-    if manifest.get("version") != FILE_TASK_PREPROCESS_CACHE_VERSION:
-        return None
-    stage = manifest.get("stage")
-    if stage not in FILE_TASK_PREPROCESS_CACHE_STAGES:
-        return None
-    expected_identity = _file_task_preprocess_cache_identity(translation_config)
-    for key, value in expected_identity.items():
-        if manifest.get(key) != value:
-            return None
-
-    xml_path = cache_dir / manifest["xml_file"]
-    temp_pdf_path = cache_dir / manifest["temp_pdf_file"]
-    mediabox_path = cache_dir / manifest["mediabox_file"]
-    if not xml_path.exists() or not temp_pdf_path.exists() or not mediabox_path.exists():
-        return None
-
-    raw_mediabox_data = json.loads(mediabox_path.read_text(encoding="utf-8"))
-    return {
-        "stage": stage,
-        "docs": xml_converter.read_xml(xml_path),
-        "temp_pdf_path": temp_pdf_path,
-        "mediabox_data": {
-            int(xref): boxes for xref, boxes in raw_mediabox_data.items()
-        },
-    }
+    return None
 
 
 def _file_task_cache_has_stage(cached_stage: str | None, stage: str) -> bool:
-    if cached_stage not in FILE_TASK_PREPROCESS_CACHE_STAGES:
-        return False
-    return FILE_TASK_PREPROCESS_CACHE_STAGES.index(
-        cached_stage
-    ) >= FILE_TASK_PREPROCESS_CACHE_STAGES.index(stage)
+    return False
 
 
 def translator_supports_llm(translator) -> bool:

@@ -36,6 +36,11 @@ class FileTaskTranslator(BaseTranslator):
         self.state = state
         self.model = "current_translation"
 
+    def _active_page(self) -> int | None:
+        page_plan = self.state.get("page_plan") or {}
+        active_page = page_plan.get("active_page")
+        return active_page if isinstance(active_page, int) else None
+
     def do_llm_translate(self, text, rate_limit_params: dict = None):
         if text is None:
             return ""
@@ -84,6 +89,7 @@ class FileTaskTranslator(BaseTranslator):
         raise RuntimeError("unsupported file-task LLM prompt shape")
 
     def _translation_task_from_items(self, items: list[dict]) -> dict:
+        active_page = self._active_page()
         blocks = []
         for item in items:
             original_source = item.get("input", "")
@@ -101,6 +107,7 @@ class FileTaskTranslator(BaseTranslator):
             "task_type": "translate",
             "lang_in": self.state["config"]["lang_in"],
             "lang_out": self.state["config"]["lang_out"],
+            "page": active_page,
             "blocks": blocks,
         }
         task_hash = stable_hash(hash_payload)
@@ -109,10 +116,12 @@ class FileTaskTranslator(BaseTranslator):
             "task_hash": task_hash,
             "lang_in": self.state["config"]["lang_in"],
             "lang_out": self.state["config"]["lang_out"],
+            "page": active_page,
             "blocks": blocks,
         }
 
     def _term_task_from_chunks(self, chunks: list[str]) -> dict:
+        active_page = self._active_page()
         blocks = []
         for chunk in chunks:
             display_source = normalize_extracted_pdf_text(chunk)
@@ -127,6 +136,7 @@ class FileTaskTranslator(BaseTranslator):
             "task_type": "term_extract",
             "lang_in": self.state["config"]["lang_in"],
             "lang_out": self.state["config"]["lang_out"],
+            "page": active_page,
             "blocks": blocks,
         }
         task_hash = stable_hash(hash_payload)
@@ -135,5 +145,6 @@ class FileTaskTranslator(BaseTranslator):
             "task_hash": task_hash,
             "lang_in": self.state["config"]["lang_in"],
             "lang_out": self.state["config"]["lang_out"],
+            "page": active_page,
             "blocks": blocks,
         }

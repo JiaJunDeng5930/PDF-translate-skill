@@ -36,6 +36,7 @@ class WorkspacePaths:
     rejected: Path
     output: Path
     working: Path
+    page_outputs: Path
     lock: Path
 
 
@@ -63,6 +64,7 @@ def paths_for(root: Path) -> WorkspacePaths:
         rejected=private / "rejected_answers",
         output=root / "output",
         working=private / "babeldoc_work",
+        page_outputs=private / "page_outputs",
         lock=private / "advance.lock",
     )
 
@@ -75,6 +77,7 @@ def ensure_dirs(paths: WorkspacePaths) -> None:
         paths.rejected,
         paths.output,
         paths.working,
+        paths.page_outputs,
     ):
         path.mkdir(parents=True, exist_ok=True)
 
@@ -148,6 +151,113 @@ def default_state(config_snapshot: dict) -> dict:
     }
 
 
+def parse_page_selection(pages: str | None, source_page_count: int) -> list[int]:
+    if source_page_count < 1:
+        raise RuntimeError("input PDF has no pages")
+    if pages is None or not str(pages).strip():
+        return list(range(1, source_page_count + 1))
+
+    result: list[int] = []
+    seen: set[int] = set()
+    for raw_part in str(pages).split(","):
+        part = raw_part.strip()
+        if not part:
+            raise RuntimeError("pages contains an empty range")
+        if "-" in part:
+            pieces = part.split("-")
+            if len(pieces) != 2:
+                raise RuntimeError(f"invalid pages range: {part}")
+            start_text, end_text = pieces
+            try:
+                start = int(start_text) if start_text else 1
+                end = int(end_text) if end_text else source_page_count
+            except ValueError as exc:
+                raise RuntimeError(f"invalid pages range: {part}") from exc
+        else:
+            try:
+                start = end = int(part)
+            except ValueError as exc:
+                raise RuntimeError(f"invalid pages page number: {part}") from exc
+        if start < 1 or end < 1 or start > end:
+            raise RuntimeError(f"invalid pages range: {part}")
+        if end > source_page_count:
+            raise RuntimeError(
+                f"pages range {part} exceeds input PDF page count {source_page_count}"
+            )
+        for page in range(start, end + 1):
+            if page not in seen:
+                result.append(page)
+                seen.add(page)
+    if not result:
+        raise RuntimeError("pages selects no input PDF pages")
+    return result
+
+
+def ensure_page_plan(state: dict, source_page_count: int) -> bool:
+    target_pages = parse_page_selection(
+        (state.get("config") or {}).get("pages"),
+        source_page_count,
+    )
+    plan = state.get("page_plan")
+    if not isinstance(plan, dict) or plan.get("target_pages") != target_pages:
+        completed_pages = target_pages if state.get("status") == "done" else []
+        state["page_plan"] = {
+            "source_page_count": source_page_count,
+            "target_pages": target_pages,
+            "active_page": None if completed_pages else target_pages[0],
+            "completed_pages": completed_pages,
+        }
+        return True
+
+    changed = False
+    completed = [
+        page
+        for page in plan.get("completed_pages", [])
+        if isinstance(page, int) and page in target_pages
+    ]
+    if completed != plan.get("completed_pages", []):
+        plan["completed_pages"] = completed
+        changed = True
+    if state.get("status") == "done" and completed != target_pages:
+        completed = target_pages
+        plan["completed_pages"] = completed
+        changed = True
+
+    if plan.get("source_page_count") != source_page_count:
+        plan["source_page_count"] = source_page_count
+        changed = True
+
+    active_page = plan.get("active_page")
+    remaining = [page for page in target_pages if page not in set(completed)]
+    expected_active = (
+        None if state.get("status") == "done" or not remaining else remaining[0]
+    )
+    if active_page != expected_active:
+        plan["active_page"] = expected_active
+        changed = True
+    return changed
+
+
+def mark_active_page_completed(state: dict) -> tuple[int | None, int | None]:
+    plan = state.get("page_plan") or {}
+    active_page = plan.get("active_page")
+    if not isinstance(active_page, int):
+        return None, None
+
+    completed = list(plan.get("completed_pages") or [])
+    if active_page not in completed:
+        completed.append(active_page)
+    plan["completed_pages"] = completed
+
+    completed_set = set(completed)
+    remaining = [
+        page for page in plan.get("target_pages", []) if page not in completed_set
+    ]
+    next_page = remaining[0] if remaining else None
+    plan["active_page"] = next_page
+    return active_page, next_page
+
+
 def load_or_init_state(
     paths: WorkspacePaths,
     config_snapshot: dict | None = None,
@@ -194,6 +304,8 @@ def save_pending_task(
     task_hash = snapshot["task_hash"]
     state["pending_task_hash"] = task_hash
     state["status"] = "needs_ai_edit"
+    if snapshot.get("page") is not None:
+        state["pending_page"] = snapshot["page"]
     state.pop("last_error", None)
     write_json(pending_snapshot_path(paths, task_hash), snapshot)
     atomic_write_text(
@@ -210,6 +322,7 @@ def save_pending_task(
         "pending_task_created",
         task_hash=task_hash,
         task_type=snapshot["task_type"],
+        page=snapshot.get("page"),
         block_count=len(blocks),
     )
 
@@ -234,6 +347,7 @@ def save_accepted_answer(
     write_json(answer_file, answer)
     answer_hash = stable_hash(answer)
     state["pending_task_hash"] = None
+    state.pop("pending_page", None)
     state["status"] = "running"
     state.pop("last_error", None)
     write_json(paths.state, state)

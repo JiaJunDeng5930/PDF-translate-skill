@@ -80,8 +80,9 @@ items:
 ```
 
 Keep `terms: []` when an item has no terms.
-Source terms are matched against normalized PDF text, so normal words may omit
-PDF line-break hyphenation such as `distribu- tions` and `real- time`.
+Each term `source` must be an exact contiguous span from the item source after
+PDF normalization. Normalization covers line-break hyphenation such as
+`distribu- tions`, abnormal whitespace, and Unicode compatibility forms.
 
 ## Runtime
 

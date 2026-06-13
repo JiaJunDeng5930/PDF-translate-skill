@@ -25,8 +25,10 @@ from .config import output_flags
 from .config import watermark_mode
 from .state import append_trace
 from .state import accepted_answer_count
+from .state import ensure_page_plan
 from .state import load_pending_task
 from .state import load_or_init_state
+from .state import mark_active_page_completed
 from .state import paths_for
 from .state import read_json
 from .state import trace_tail
@@ -71,6 +73,11 @@ def advance(workspace: Path | None = None) -> dict:
         except AssetError as exc:
             return _asset_error_response(paths, str(exc), state)
         append_trace(paths, "assets_ready", asset_dir=str(asset_dir))
+        try:
+            if _ensure_page_plan(paths, state):
+                write_json(paths.state, state)
+        except Exception as exc:
+            return _config_error_response(paths, str(exc), state)
 
         state["advance_count"] = int(state.get("advance_count", 0)) + 1
         write_json(paths.state, state)
@@ -80,85 +87,136 @@ def advance(workspace: Path | None = None) -> dict:
             state = read_json(paths.state, state)
             return _pending_response(paths, state, validation)
 
-        translator = FileTaskTranslator(paths, state)
-        config = _build_translation_config(paths, state, translator)
-        config.file_task_workflow = True
-        config.file_task_preprocess_cache_key = state["config"]["config_hash"]
-        config.progress_change_callback = (
-            lambda **event: _record_pipeline_progress(paths, event)
-        )
+        state = read_json(paths.state, state)
+        if state.get("status") == "done":
+            return _done_response(paths, state, validation.warnings)
 
-        try:
-            result = translate(config)
-        except FileTaskPending:
-            state = read_json(paths.state, state)
-            return _pending_response(
+        while True:
+            if _page_plan_complete(state):
+                state["status"] = "done"
+                state["pending_task_hash"] = None
+                state.pop("last_error", None)
+                write_json(paths.state, state)
+                _write_progress_snapshot(
+                    paths,
+                    _annotate_progress_with_page_plan(
+                        _terminal_pipeline_progress(),
+                        state,
+                    ),
+                )
+                append_trace(
+                    paths,
+                    "pdf_written",
+                    output_pdf=_primary_output_pdf(state),
+                    output_pdfs=state.get("output_pdfs", {}),
+                )
+                return _done_response(paths, state, validation.warnings)
+
+            translator = FileTaskTranslator(paths, state)
+            config = _build_translation_config(paths, state, translator)
+            config.file_task_workflow = True
+            config.progress_change_callback = (
+                lambda **event: _record_pipeline_progress(paths, event)
+            )
+
+            try:
+                result = translate(config)
+            except FileTaskPending:
+                state = read_json(paths.state, state)
+                return _pending_response(
+                    paths,
+                    state,
+                    ValidationResult(
+                        False,
+                        state.get("status", "needs_ai_edit"),
+                        [],
+                        [],
+                    ),
+                )
+            except Exception as exc:
+                state["status"] = "error"
+                state["last_error"] = str(exc)
+                write_json(paths.state, state)
+                append_trace(
+                    paths,
+                    "advance_error",
+                    error=str(exc),
+                    traceback=traceback.format_exc(limit=8),
+                )
+                return {
+                    "status": "error",
+                    "editable_file": None,
+                    "instruction": "Fix the runtime error reported in validation_errors.",
+                    "progress": _progress(paths, state),
+                    "validation_errors": [str(exc)],
+                    "validation_warnings": [],
+                    "trace_tail": trace_tail(paths),
+                    "output_pdf": None,
+                    "output_pdfs": {},
+                }
+            finally:
+                shutdown_file_task_runtime()
+
+            shard_output_pdfs, _shard_output_pdf = _collect_output_pdfs(
+                result,
+                state["config"],
+            )
+            output_pdfs, output_pdf = _merge_page_output_pdfs(
                 paths,
                 state,
-                ValidationResult(False, state.get("status", "needs_ai_edit"), [], []),
+                shard_output_pdfs,
             )
-        except Exception as exc:
-            state["status"] = "error"
-            state["last_error"] = str(exc)
+            output_errors = _validate_output_pdfs(output_pdfs)
+            if output_errors:
+                state["status"] = "error"
+                state["last_error"] = "; ".join(output_errors)
+                state["pending_task_hash"] = None
+                state["output_pdfs"] = output_pdfs
+                write_json(paths.state, state)
+                append_trace(paths, "output_validation_error", errors=output_errors)
+                return {
+                    "status": "error",
+                    "editable_file": None,
+                    "instruction": "Fix the output validation errors reported in validation_errors.",
+                    "progress": _progress(paths, state),
+                    "validation_errors": output_errors,
+                    "validation_warnings": validation.warnings,
+                    "trace_tail": trace_tail(paths),
+                    "output_pdf": output_pdf,
+                    "output_pdfs": output_pdfs,
+                }
+
+            completed_page, next_page = mark_active_page_completed(state)
+            state["pending_task_hash"] = None
+            state["output_pdfs"] = output_pdfs
+            state.pop("last_error", None)
+            if next_page is None:
+                state["status"] = "done"
+                write_json(paths.state, state)
+                _write_progress_snapshot(
+                    paths,
+                    _annotate_progress_with_page_plan(
+                        _terminal_pipeline_progress(),
+                        state,
+                    ),
+                )
+                append_trace(
+                    paths,
+                    "pdf_written",
+                    output_pdf=output_pdf,
+                    output_pdfs=output_pdfs,
+                )
+                return _done_response(paths, state, validation.warnings)
+
+            state["status"] = "running"
             write_json(paths.state, state)
             append_trace(
                 paths,
-                "advance_error",
-                error=str(exc),
-                traceback=traceback.format_exc(limit=8),
+                "page_completed",
+                page=completed_page,
+                next_page=next_page,
+                output_pdfs=output_pdfs,
             )
-            return {
-                "status": "error",
-                "editable_file": None,
-                "instruction": "Fix the runtime error reported in validation_errors.",
-                "progress": _progress(paths, state),
-                "validation_errors": [str(exc)],
-                "validation_warnings": [],
-                "trace_tail": trace_tail(paths),
-                "output_pdf": None,
-                "output_pdfs": {},
-            }
-        finally:
-            shutdown_file_task_runtime()
-
-        output_pdfs, output_pdf = _collect_output_pdfs(result, state["config"])
-        output_errors = _validate_output_pdfs(output_pdfs)
-        if output_errors:
-            state["status"] = "error"
-            state["last_error"] = "; ".join(output_errors)
-            state["pending_task_hash"] = None
-            state["output_pdfs"] = output_pdfs
-            write_json(paths.state, state)
-            append_trace(paths, "output_validation_error", errors=output_errors)
-            return {
-                "status": "error",
-                "editable_file": None,
-                "instruction": "Fix the output validation errors reported in validation_errors.",
-                "progress": _progress(paths, state),
-                "validation_errors": output_errors,
-                "validation_warnings": validation.warnings,
-                "trace_tail": trace_tail(paths),
-                "output_pdf": output_pdf,
-                "output_pdfs": output_pdfs,
-            }
-        state["status"] = "done"
-        state["pending_task_hash"] = None
-        state["output_pdfs"] = output_pdfs
-        state.pop("last_error", None)
-        write_json(paths.state, state)
-        _write_progress_snapshot(paths, _terminal_pipeline_progress())
-        append_trace(paths, "pdf_written", output_pdf=output_pdf, output_pdfs=output_pdfs)
-        return {
-            "status": "done",
-            "editable_file": None,
-            "instruction": "The translated PDF is complete.",
-            "progress": _progress(paths, state),
-            "validation_errors": [],
-            "validation_warnings": validation.warnings,
-            "trace_tail": trace_tail(paths),
-            "output_pdf": output_pdf,
-            "output_pdfs": output_pdfs,
-        }
 
 
 def _build_translation_config(
@@ -168,6 +226,14 @@ def _build_translation_config(
 ) -> TranslationConfig:
     config = state["config"]
     no_dual, no_mono = output_flags(config["output_mode"])
+    active_page = _active_page(state)
+    page_text = str(active_page) if active_page is not None else config["pages"]
+    output_dir = paths.output
+    working_dir = paths.working
+    if active_page is not None:
+        shard_name = f"page_{active_page:04d}"
+        output_dir = paths.page_outputs / shard_name
+        working_dir = paths.working / shard_name
     return TranslationConfig(
         translator=translator,
         term_extraction_translator=translator,
@@ -175,9 +241,9 @@ def _build_translation_config(
         lang_in=config["lang_in"],
         lang_out=config["lang_out"],
         doc_layout_model=None,
-        pages=config["pages"],
-        output_dir=paths.output,
-        working_dir=paths.working,
+        pages=page_text,
+        output_dir=output_dir,
+        working_dir=working_dir,
         debug=False,
         no_dual=no_dual,
         no_mono=no_mono,
@@ -188,6 +254,41 @@ def _build_translation_config(
         primary_font_family=config["primary_font_family"],
         report_interval=2.0,
     )
+
+
+def _ensure_page_plan(paths, state: dict) -> bool:
+    source_page_count = _source_page_count(state["config"]["input_pdf"])
+    changed = ensure_page_plan(state, source_page_count)
+    if changed:
+        append_trace(
+            paths,
+            "page_plan_updated",
+            page_plan=_public_page_plan(state),
+        )
+    return changed
+
+
+def _source_page_count(input_pdf: str) -> int:
+    import pymupdf
+
+    document = pymupdf.open(input_pdf)
+    try:
+        return int(document.page_count)
+    finally:
+        document.close()
+
+
+def _active_page(state: dict) -> int | None:
+    page_plan = state.get("page_plan") or {}
+    active_page = page_plan.get("active_page")
+    return active_page if isinstance(active_page, int) else None
+
+
+def _page_plan_complete(state: dict) -> bool:
+    page_plan = state.get("page_plan") or {}
+    target_pages = page_plan.get("target_pages") or []
+    completed_pages = set(page_plan.get("completed_pages") or [])
+    return bool(target_pages) and all(page in completed_pages for page in target_pages)
 
 
 def _pending_response(
@@ -206,6 +307,20 @@ def _pending_response(
         "progress": _progress(paths, state),
         "validation_errors": validation.errors,
         "validation_warnings": validation.warnings,
+        "trace_tail": trace_tail(paths),
+        "output_pdf": _primary_output_pdf(state),
+        "output_pdfs": state.get("output_pdfs", {}),
+    }
+
+
+def _done_response(paths, state: dict, warnings: list[str]) -> dict:
+    return {
+        "status": "done",
+        "editable_file": None,
+        "instruction": "The translated PDF is complete.",
+        "progress": _progress(paths, state),
+        "validation_errors": [],
+        "validation_warnings": warnings,
         "trace_tail": trace_tail(paths),
         "output_pdf": _primary_output_pdf(state),
         "output_pdfs": state.get("output_pdfs", {}),
@@ -249,14 +364,23 @@ def _progress(paths, state: dict) -> dict:
             "needs_ai_edit",
             "needs_ai_fix",
         }
+    if pipeline_progress and "page_progress" not in pipeline_progress:
+        pipeline_progress = _annotate_progress_with_page_plan(
+            pipeline_progress,
+            state,
+        )
     return {
         "advance_count": state.get("advance_count", 0),
         "accepted_tasks": accepted_answer_count(paths),
         "pending_task_type": pending.get("task_type"),
         "pending_blocks": len(pending.get("blocks", [])),
+        "pending_page": pending.get("page") or state.get("pending_page"),
         "input_pdf": config.get("input_pdf"),
         "config_hash": config.get("config_hash"),
         "asset_dir": config.get("asset_dir"),
+        "page_plan": _public_page_plan(state),
+        "page_progress": (pipeline_progress or {}).get("page_progress")
+        or _page_progress(state, pipeline_progress),
         "pipeline_progress": pipeline_progress,
     }
 
@@ -285,6 +409,7 @@ def _record_pipeline_progress(paths, event: dict) -> None:
             "needs_ai_edit",
             "needs_ai_fix",
         }
+        progress = _annotate_progress_with_page_plan(progress, state)
     _write_progress_snapshot(paths, progress)
     if event_type in {"progress_start", "progress_end", "progress_paused"}:
         append_trace(paths, "pipeline_progress", **progress)
@@ -313,6 +438,69 @@ def _terminal_pipeline_progress() -> dict:
         "total_parts": None,
         "paused_for_ai": False,
         "updated_at": datetime.now().isoformat(timespec="seconds"),
+    }
+
+
+def _public_page_plan(state: dict) -> dict | None:
+    page_plan = state.get("page_plan")
+    if not isinstance(page_plan, dict):
+        return None
+    return {
+        "source_page_count": page_plan.get("source_page_count"),
+        "target_pages": list(page_plan.get("target_pages") or []),
+        "active_page": page_plan.get("active_page"),
+        "completed_pages": list(page_plan.get("completed_pages") or []),
+    }
+
+
+def _annotate_progress_with_page_plan(progress: dict, state: dict) -> dict:
+    annotated = dict(progress)
+    annotated["page_plan"] = _public_page_plan(state)
+    page_progress = _page_progress(state, annotated)
+    annotated["page_progress"] = page_progress
+    if page_progress:
+        annotated["shard_stage_current"] = progress.get("stage_current")
+        annotated["shard_stage_total"] = progress.get("stage_total")
+        annotated["shard_stage_progress"] = progress.get("stage_progress")
+        annotated["stage_current"] = page_progress["completed_count"]
+        annotated["stage_total"] = page_progress["target_total"]
+        annotated["stage_progress"] = page_progress["overall_progress"]
+        annotated["overall_progress"] = page_progress["overall_progress"]
+    return annotated
+
+
+def _page_progress(state: dict, pipeline_progress: dict | None) -> dict | None:
+    page_plan = state.get("page_plan")
+    if not isinstance(page_plan, dict):
+        return None
+    target_pages = list(page_plan.get("target_pages") or [])
+    if not target_pages:
+        return None
+    completed_pages = list(page_plan.get("completed_pages") or [])
+    active_page = page_plan.get("active_page")
+    completed_count = len(set(completed_pages) & set(target_pages))
+
+    if state.get("status") == "done" or _page_plan_complete(state):
+        active_fraction = 0.0
+        completed_count = len(target_pages)
+        active_page = None
+    else:
+        stage_progress = 0.0
+        if pipeline_progress:
+            raw_stage_progress = pipeline_progress.get("stage_progress")
+            if isinstance(raw_stage_progress, (int, float)):
+                stage_progress = max(0.0, min(100.0, float(raw_stage_progress)))
+        active_fraction = stage_progress / 100.0 if active_page is not None else 0.0
+
+    overall = ((completed_count + active_fraction) / len(target_pages)) * 100.0
+    return {
+        "target_total": len(target_pages),
+        "completed_count": completed_count,
+        "active_page": active_page,
+        "completed_pages": completed_pages,
+        "active_page_stage": (pipeline_progress or {}).get("stage"),
+        "active_page_progress": (pipeline_progress or {}).get("stage_progress"),
+        "overall_progress": round(overall, 2),
     }
 
 
@@ -429,6 +617,82 @@ def _collect_output_pdfs(result, config: dict) -> tuple[dict[str, str], str | No
     if primary is not None:
         return output_pdfs, primary
     return output_pdfs, next(iter(output_pdfs.values()), None)
+
+
+def _merge_page_output_pdfs(
+    paths,
+    state: dict,
+    shard_output_pdfs: dict[str, str],
+) -> tuple[dict[str, str], str | None]:
+    if not shard_output_pdfs:
+        return {}, None
+    active_page = _active_page(state)
+    if active_page is None:
+        return shard_output_pdfs, next(iter(shard_output_pdfs.values()))
+
+    merged: dict[str, str] = {}
+    existing_outputs = state.get("output_pdfs") or {}
+    source_pdf = Path(state["config"]["input_pdf"])
+    for label, shard_path_text in shard_output_pdfs.items():
+        shard_path = Path(shard_path_text)
+        output_path = paths.output / shard_path.name
+        base_path = Path(existing_outputs.get(label) or source_pdf)
+        _replace_pdf_page(
+            base_path=base_path,
+            shard_path=shard_path,
+            output_path=output_path,
+            page_number=active_page,
+        )
+        merged[label] = str(output_path)
+    primary_key = _primary_output_key(state["config"])
+    primary = merged.get(primary_key)
+    if primary is not None:
+        return merged, primary
+    return merged, next(iter(merged.values()), None)
+
+
+def _replace_pdf_page(
+    base_path: Path,
+    shard_path: Path,
+    output_path: Path,
+    page_number: int,
+) -> None:
+    import pymupdf
+
+    page_index = page_number - 1
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = output_path.with_name(f".{output_path.name}.page-{page_number}.tmp.pdf")
+    if tmp_path.exists():
+        tmp_path.unlink()
+
+    base_document = pymupdf.open(base_path)
+    shard_document = pymupdf.open(shard_path)
+    try:
+        if page_index >= base_document.page_count:
+            raise RuntimeError(
+                f"target page {page_number} exceeds base PDF page count "
+                f"{base_document.page_count}"
+            )
+        if shard_document.page_count == 1:
+            shard_index = 0
+        else:
+            shard_index = page_index
+        if shard_index >= shard_document.page_count:
+            raise RuntimeError(
+                f"target page {page_number} is missing from shard PDF {shard_path}"
+            )
+        base_document.delete_page(page_index)
+        base_document.insert_pdf(
+            shard_document,
+            from_page=shard_index,
+            to_page=shard_index,
+            start_at=page_index,
+        )
+        base_document.save(tmp_path, garbage=4, deflate=True)
+    finally:
+        shard_document.close()
+        base_document.close()
+    tmp_path.replace(output_path)
 
 
 def _validate_output_pdfs(output_pdfs: dict[str, str]) -> list[str]:

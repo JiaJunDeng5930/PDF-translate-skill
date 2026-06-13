@@ -13,24 +13,27 @@ Preparation-stage config:
 Translation-stage state:
 
 - `current_translation.yaml`: the only AI-editable file while a task is pending.
-- `.pdf_translate/state.json`: business state only: frozen config, pending task hash, status, final output map, and advance count.
+- `.pdf_translate/state.json`: business state only: frozen config, pending task hash, status, final output map, advance count, and `page_plan`.
 - `.pdf_translate/progress.json`: latest pipeline progress snapshot.
 - `.pdf_translate/tasks/`: pending task snapshots keyed by task hash.
 - `.pdf_translate/accepted_answers/`: accepted editable files and JSON answers replayed into the internal PDF pipeline.
 - `.pdf_translate/rejected_answers/`: damaged editable files archived before template restoration.
+- `.pdf_translate/page_outputs/`: private per-page shard PDFs before page replacement into final outputs.
 - `.pdf_translate/trace.jsonl`: compact config, progress, validation, answer, and output events.
 - `.pdf_translate/advance.lock`: PID and timestamp metadata for the active advance process. A live PID returns `locked`; a missing PID is recovered as stale and traced before the run continues.
 
-The runtime re-enters the internal PDF pipeline on each advance and replays accepted answers by stable task hash. File-task preprocessing checkpoints live under `.pdf_translate/babeldoc_work/<input-stem>/file_task_preprocess_cache/` and store the normalized input PDF, mediabox data, and IL XML after completed preprocessing stages. A cache hit with matching `config_hash` and input PDF hash resumes after the latest saved stage.
+The runtime re-enters the internal PDF pipeline on each advance and replays accepted answers by stable task hash. The frozen `pages` config defines the target page set. `state.json` stores `page_plan.target_pages`, `page_plan.active_page`, and `page_plan.completed_pages` as the runtime cursor. BabelDOC receives a single-page `pages` value for the active shard. File-task preprocessing XML checkpoints are disabled because whole-document IL XML serialization is too slow and memory-heavy for large PDFs.
 
-The synchronous BabelDOC progress monitor writes the latest pipeline stage into `.pdf_translate/progress.json`. Stage starts, ends, and AI pauses are also recorded in `trace.jsonl`. `paused_for_ai` is derived from `status in {"needs_ai_edit", "needs_ai_fix"}`. A `done` state reports terminal progress with `overall_progress: 100` and `paused_for_ai: false`.
+Each completed shard writes private PDFs under `.pdf_translate/page_outputs/`. The public output in `output/` is produced by replacing only `active_page` in the original or cumulative PDF with the corresponding page from the shard PDF. Pages outside `page_plan.target_pages` remain sourced from the original PDF.
+
+The synchronous BabelDOC progress monitor writes the latest pipeline stage into `.pdf_translate/progress.json`. Stage starts, ends, and AI pauses are also recorded in `trace.jsonl`. `paused_for_ai` is derived from `status in {"needs_ai_edit", "needs_ai_fix"}`. Current UI progress should read `page_progress`, which is derived from the persisted page cursor. Historical trace events are audit data. A `done` state reports terminal progress with `overall_progress: 100` and `paused_for_ai: false`.
 
 The BabelDOC-derived pipeline files with file-task changes are:
 
 - `babeldoc/file_task_bridge.py`: pending exception and immediate executor.
 - `babeldoc/format/pdf/document_il/midend/automatic_term_extractor.py`: file-task sequential term extraction and pending propagation.
 - `babeldoc/format/pdf/document_il/midend/il_translator_llm_only.py`: file-task sequential translation batches and pending propagation.
-- `babeldoc/format/pdf/high_level.py`: file-task pending propagation and preprocessing checkpoints through the high-level pipeline.
+- `babeldoc/format/pdf/high_level.py`: file-task pending propagation through the high-level pipeline.
 
 Validation invariants:
 
@@ -44,7 +47,8 @@ Validation invariants:
 - Completed output PDFs are text-scanned for visible `<bN>`, `</bN>`, `{{FORMULA_N}}`, and `{{PROTECTED_N}}` markers before `state.json` is marked `done`.
 - Term extraction tasks require `terms` to be a YAML list of mappings with
   `source` and `target` fields. Source term matching normalizes PDF line-break
-  hyphenation and abnormal whitespace.
+  hyphenation, abnormal whitespace, and Unicode compatibility forms. Each
+  `source` term must still be an exact contiguous span after that normalization.
 
 PDF generation is owned by the internal pipeline: `high_level.translate()` runs layout parsing, paragraph finding, styles/formulas, term extraction, IL translation, typesetting, font mapping, and PDF creation.
 
