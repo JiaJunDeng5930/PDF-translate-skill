@@ -24,6 +24,8 @@ from .config import load_workspace_config
 from .config import output_flags
 from .config import watermark_mode
 from .state import append_trace
+from .state import accepted_answer_count
+from .state import load_pending_task
 from .state import load_or_init_state
 from .state import paths_for
 from .state import read_json
@@ -81,7 +83,7 @@ def advance(workspace: Path | None = None) -> dict:
         translator = FileTaskTranslator(paths, state)
         config = _build_translation_config(paths, state, translator)
         config.file_task_workflow = True
-        config.file_task_preprocess_cache_key = state["config_hash"]
+        config.file_task_preprocess_cache_key = state["config"]["config_hash"]
         config.progress_change_callback = (
             lambda **event: _record_pipeline_progress(paths, event)
         )
@@ -109,7 +111,7 @@ def advance(workspace: Path | None = None) -> dict:
                 "status": "error",
                 "editable_file": None,
                 "instruction": "Fix the runtime error reported in validation_errors.",
-                "progress": _progress(state),
+                "progress": _progress(paths, state),
                 "validation_errors": [str(exc)],
                 "validation_warnings": [],
                 "trace_tail": trace_tail(paths),
@@ -124,14 +126,15 @@ def advance(workspace: Path | None = None) -> dict:
         if output_errors:
             state["status"] = "error"
             state["last_error"] = "; ".join(output_errors)
-            state["pending"] = None
+            state["pending_task_hash"] = None
+            state["output_pdfs"] = output_pdfs
             write_json(paths.state, state)
             append_trace(paths, "output_validation_error", errors=output_errors)
             return {
                 "status": "error",
                 "editable_file": None,
                 "instruction": "Fix the output validation errors reported in validation_errors.",
-                "progress": _progress(state),
+                "progress": _progress(paths, state),
                 "validation_errors": output_errors,
                 "validation_warnings": validation.warnings,
                 "trace_tail": trace_tail(paths),
@@ -139,17 +142,17 @@ def advance(workspace: Path | None = None) -> dict:
                 "output_pdfs": output_pdfs,
             }
         state["status"] = "done"
-        state["pending"] = None
-        state["output_pdf"] = output_pdf
+        state["pending_task_hash"] = None
         state["output_pdfs"] = output_pdfs
         state.pop("last_error", None)
         write_json(paths.state, state)
+        _write_progress_snapshot(paths, _terminal_pipeline_progress())
         append_trace(paths, "pdf_written", output_pdf=output_pdf, output_pdfs=output_pdfs)
         return {
             "status": "done",
             "editable_file": None,
             "instruction": "The translated PDF is complete.",
-            "progress": _progress(state),
+            "progress": _progress(paths, state),
             "validation_errors": [],
             "validation_warnings": validation.warnings,
             "trace_tail": trace_tail(paths),
@@ -192,7 +195,7 @@ def _pending_response(
     state: dict,
     validation: ValidationResult,
 ) -> dict:
-    pending = state.get("pending") or {}
+    pending = load_pending_task(paths, state) or {}
     status = validation.status
     if status == "accepted":
         status = state.get("status", "needs_ai_edit")
@@ -200,11 +203,11 @@ def _pending_response(
         "status": status if status != "no_pending" else state.get("status"),
         "editable_file": str(paths.current_translation),
         "instruction": _instruction_for_pending(pending, validation, state),
-        "progress": _progress(state),
+        "progress": _progress(paths, state),
         "validation_errors": validation.errors,
         "validation_warnings": validation.warnings,
         "trace_tail": trace_tail(paths),
-        "output_pdf": state.get("output_pdf"),
+        "output_pdf": _primary_output_pdf(state),
         "output_pdfs": state.get("output_pdfs", {}),
     }
 
@@ -225,8 +228,8 @@ def _instruction_for_pending(
     elif task_type == "translate":
         body = (
             f"Edit current_translation.yaml. Fill each item's translation field "
-            f"with {target_language} text. Keep source fields unchanged and keep "
-            "every protected token in the same order."
+            f"with {target_language} text. Keep source fields unchanged. Preserve "
+            "every placeholder such as <b1> and </b1> exactly, in the same order."
         )
     else:
         body = "Edit current_translation.yaml."
@@ -235,30 +238,36 @@ def _instruction_for_pending(
     return body + " Save the file and run advance again."
 
 
-def _progress(state: dict) -> dict:
+def _progress(paths, state: dict) -> dict:
+    config = state.get("config") or {}
+    pending = load_pending_task(paths, state) or {}
+    pipeline_progress = read_json(paths.progress, None)
+    if state.get("status") == "done":
+        pipeline_progress = _terminal_pipeline_progress()
+    elif pipeline_progress:
+        pipeline_progress["paused_for_ai"] = state.get("status") in {
+            "needs_ai_edit",
+            "needs_ai_fix",
+        }
     return {
         "advance_count": state.get("advance_count", 0),
-        "accepted_tasks": len(state.get("accepted", {})),
-        "pending_task_type": (state.get("pending") or {}).get("task_type"),
-        "pending_blocks": len((state.get("pending") or {}).get("blocks", [])),
-        "input_pdf": state.get("input_pdf"),
-        "config_hash": state.get("config_hash"),
-        "asset_dir": (state.get("config") or {}).get("asset_dir"),
-        "pipeline_progress": state.get("pipeline_progress"),
+        "accepted_tasks": accepted_answer_count(paths),
+        "pending_task_type": pending.get("task_type"),
+        "pending_blocks": len(pending.get("blocks", [])),
+        "input_pdf": config.get("input_pdf"),
+        "config_hash": config.get("config_hash"),
+        "asset_dir": config.get("asset_dir"),
+        "pipeline_progress": pipeline_progress,
     }
 
 
 def _record_pipeline_progress(paths, event: dict) -> None:
-    state = read_json(paths.state, None)
-    if state is None:
-        return
-
     event_type = event.get("type")
     if event_type == "stage_summary":
-        state["pipeline_stages"] = event.get("stages", [])
-        write_json(paths.state, state)
+        append_trace(paths, "pipeline_stage_summary", stages=event.get("stages", []))
         return
 
+    state = read_json(paths.state, {}) or {}
     progress = {
         "event_type": event_type,
         "stage": event.get("stage"),
@@ -271,10 +280,40 @@ def _record_pipeline_progress(paths, event: dict) -> None:
         "paused_for_ai": event_type == "progress_paused",
         "updated_at": datetime.now().isoformat(timespec="seconds"),
     }
-    state["pipeline_progress"] = progress
-    write_json(paths.state, state)
+    if state:
+        progress["paused_for_ai"] = state.get("status") in {
+            "needs_ai_edit",
+            "needs_ai_fix",
+        }
+    _write_progress_snapshot(paths, progress)
     if event_type in {"progress_start", "progress_end", "progress_paused"}:
         append_trace(paths, "pipeline_progress", **progress)
+
+
+def _write_progress_snapshot(paths, progress: dict) -> None:
+    try:
+        write_json(paths.progress, progress)
+    except Exception as exc:
+        logger.debug("failed to write progress snapshot", exc_info=True)
+        try:
+            append_trace(paths, "pipeline_progress_write_failed", error=str(exc))
+        except Exception:
+            logger.debug("failed to trace progress write failure", exc_info=True)
+
+
+def _terminal_pipeline_progress() -> dict:
+    return {
+        "event_type": "done",
+        "stage": "Done",
+        "stage_progress": 100.0,
+        "stage_current": 1,
+        "stage_total": 1,
+        "overall_progress": 100.0,
+        "part_index": None,
+        "total_parts": None,
+        "paused_for_ai": False,
+        "updated_at": datetime.now().isoformat(timespec="seconds"),
+    }
 
 
 def shutdown_file_task_runtime() -> None:
@@ -286,7 +325,7 @@ def shutdown_file_task_runtime() -> None:
 
 
 def _config_drift_error(state: dict, current_config: dict) -> str | None:
-    frozen_hash = state.get("config_hash")
+    frozen_hash = (state.get("config") or {}).get("config_hash")
     if not frozen_hash:
         return (
             "state was created without a frozen config; remove .pdf_translate and "
@@ -310,11 +349,11 @@ def _config_error_response(paths, error: str, state: dict | None) -> dict:
         "status": "config_error",
         "editable_file": None,
         "instruction": "Fix pdf_translate.yaml before running advance again.",
-        "progress": _progress(state or {}),
+        "progress": _progress(paths, state or {}),
         "validation_errors": [error],
         "validation_warnings": [],
         "trace_tail": trace_tail(paths),
-        "output_pdf": (state or {}).get("output_pdf"),
+        "output_pdf": _primary_output_pdf(state or {}),
         "output_pdfs": (state or {}).get("output_pdfs", {}),
     }
 
@@ -332,11 +371,11 @@ def _asset_error_response(paths, error: str, state: dict | None) -> dict:
             "Prepare the configured asset_dir with scripts/download_assets.py, "
             "then run advance again."
         ),
-        "progress": _progress(state or {}),
+        "progress": _progress(paths, state or {}),
         "validation_errors": [error],
         "validation_warnings": [],
         "trace_tail": trace_tail(paths),
-        "output_pdf": (state or {}).get("output_pdf"),
+        "output_pdf": _primary_output_pdf(state or {}),
         "output_pdfs": (state or {}).get("output_pdfs", {}),
     }
 
@@ -349,13 +388,25 @@ def _lock_error_response(paths, error) -> dict:
         if paths.current_translation.exists()
         else None,
         "instruction": "Another advance process is running. Wait for it to finish, then run advance again.",
-        "progress": _progress(state),
+        "progress": _progress(paths, state),
         "validation_errors": [str(error)],
         "validation_warnings": [],
         "trace_tail": trace_tail(paths),
-        "output_pdf": state.get("output_pdf"),
+        "output_pdf": _primary_output_pdf(state),
         "output_pdfs": state.get("output_pdfs", {}),
     }
+
+
+def _primary_output_pdf(state: dict) -> str | None:
+    output_pdfs = state.get("output_pdfs") or {}
+    if not output_pdfs:
+        return None
+    config = state.get("config") or {}
+    if config:
+        primary = output_pdfs.get(_primary_output_key(config))
+        if primary:
+            return primary
+    return next(iter(output_pdfs.values()), None)
 
 
 def _collect_output_pdfs(result, config: dict) -> tuple[dict[str, str], str | None]:

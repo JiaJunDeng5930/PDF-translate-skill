@@ -137,7 +137,7 @@ Typical agent workflow:
 3. Run `advance.py` from that workspace.
 4. Fill every YAML `translation` field for translation tasks.
 5. Keep every YAML `source` field unchanged.
-6. Preserve protected tokens such as `{{FORMULA_1}}` and `{{PROTECTED_1}}`.
+6. Preserve placeholders such as `<b1>` and `</b1>` exactly and in the same order.
 7. Run `advance.py` again.
 8. Use `output_pdf` or `output_pdfs` from the final JSON result.
 

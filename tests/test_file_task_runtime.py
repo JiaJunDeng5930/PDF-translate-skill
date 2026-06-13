@@ -89,10 +89,11 @@ add_formula_placehold_hint: false
             + "\n",
         )
         snapshot = load_workspace_config(self.tmp).snapshot
+        self.assertNotIn("babeldoc_config", snapshot)
         state = {
             "config": snapshot,
-            "config_hash": snapshot["config_hash"],
-            "accepted": {},
+            "pending_task_hash": None,
+            "status": "initialized",
         }
         translator = FileTaskTranslator(paths_for(self.tmp), state)
         with patch(
@@ -113,6 +114,45 @@ add_formula_placehold_hint: false
         self.assertFalse(config.auto_extract_glossary)
         self.assertEqual(config.primary_font_family, "serif")
         self.assertFalse(config.add_formula_placehold_hint)
+
+    def test_initialized_state_keeps_runtime_sources_single_owned(self) -> None:
+        from file_task_pdf_translate.config import load_workspace_config
+        from file_task_pdf_translate.state import load_or_init_state
+        from file_task_pdf_translate.state import paths_for
+
+        self.write_config(
+            """
+input_pdf: paper.pdf
+lang_in: en
+lang_out: zh-CN
+asset_dir: assets
+output_mode: mono
+watermark_output_mode: watermarked
+auto_extract_glossary: true
+primary_font_family: null
+add_formula_placehold_hint: true
+""".strip()
+            + "\n",
+        )
+
+        snapshot = load_workspace_config(self.tmp).snapshot
+        state = load_or_init_state(paths_for(self.tmp), snapshot)
+
+        self.assertIn("config", state)
+        self.assertEqual(state["config"]["config_hash"], snapshot["config_hash"])
+        self.assertIsNone(state["pending_task_hash"])
+        self.assertEqual(state["output_pdfs"], {})
+        for field in (
+            "input_pdf",
+            "config_hash",
+            "pending",
+            "accepted",
+            "output_pdf",
+            "pipeline_progress",
+            "pipeline_stages",
+            "last_error",
+        ):
+            self.assertNotIn(field, state)
 
     def test_initialized_state_rejects_config_drift(self) -> None:
         from file_task_pdf_translate.config import load_workspace_config
@@ -392,61 +432,34 @@ items:
         self.assertEqual(errors, ["item 1: terms must be a YAML list"])
 
     def test_protected_tokens_are_plain_text_yaml_values(self) -> None:
-        from file_task_pdf_translate.editable import marker_sequence
-        from file_task_pdf_translate.editable import replace_internal_placeholders
-        from file_task_pdf_translate.editable import restore_internal_placeholders
+        from file_task_pdf_translate.editable import placeholder_sequence
 
-        display, token_map = replace_internal_placeholders(
-            "Use <b0> and <b1>.",
-            {"<b0>"},
-        )
+        display = "Use <b0> and <b1>."
 
-        self.assertEqual(display, "Use {{FORMULA_1}} and {{PROTECTED_1}}.")
-        self.assertEqual(marker_sequence(display), ["FORMULA_1", "PROTECTED_1"])
-        self.assertEqual(
-            restore_internal_placeholders(display, token_map),
-            "Use <b0> and <b1>.",
-        )
+        self.assertEqual(placeholder_sequence(display), ["<b0>", "<b1>"])
         self.assertNotIn("[[", display)
         self.assertNotIn("⟦", display)
 
     def test_protected_tokens_are_detected_when_adjacent_to_text_and_digits(self) -> None:
-        from file_task_pdf_translate.editable import marker_sequence
-        from file_task_pdf_translate.editable import replace_internal_placeholders
-        from file_task_pdf_translate.editable import restore_internal_placeholders
+        from file_task_pdf_translate.editable import placeholder_sequence
 
-        display, token_map = replace_internal_placeholders("<b6></b7>3<b8>")
+        display = "<b6></b7>3<b8>"
 
-        self.assertEqual(display, "{{PROTECTED_1}}{{PROTECTED_2}}3{{PROTECTED_3}}")
         self.assertEqual(
-            marker_sequence(display),
-            ["PROTECTED_1", "PROTECTED_2", "PROTECTED_3"],
+            placeholder_sequence(display),
+            ["<b6>", "</b7>", "<b8>"],
         )
         self.assertEqual(
-            marker_sequence("Liangsi LuFORMULA_1Xuhang Chen"),
-            ["FORMULA_1"],
+            placeholder_sequence("Liangsi Lu<b1>Xuhang Chen"),
+            ["<b1>"],
         )
         self.assertEqual(
-            marker_sequence("FORMULA_1PROTECTED_1Corresponding author"),
-            ["FORMULA_1", "PROTECTED_1"],
+            placeholder_sequence("<b1><b2>Corresponding author"),
+            ["<b1>", "<b2>"],
         )
         self.assertEqual(
-            marker_sequence(" PROTECTED_1ChordEditPROTECTED_2,"),
-            ["PROTECTED_1", "PROTECTED_2"],
-        )
-        self.assertEqual(
-            restore_internal_placeholders(
-                "FORMULA_1PROTECTED_1Corresponding author",
-                [
-                    {"marker": "FORMULA_1", "token": "<b0>"},
-                    {"marker": "PROTECTED_1", "token": "<b1>"},
-                ],
-            ),
-            "<b0><b1>Corresponding author",
-        )
-        self.assertEqual(
-            restore_internal_placeholders(display, token_map),
-            "<b6></b7>3<b8>",
+            placeholder_sequence(" <b1>ChordEdit</b1>,"),
+            ["<b1>", "</b1>"],
         )
 
     def test_extracted_pdf_text_is_normalized_before_editable_tasks(self) -> None:
@@ -462,10 +475,10 @@ items:
         self.assertIn("∫", normalized)
         self.assertIn("stability", normalized)
         self.assertIn("measurements R", normalized)
-        self.assertIn("proxy for", normalized)
-        self.assertIn("preserved or", normalized)
-        self.assertIn("which derived", normalized)
-        self.assertIn("in the Appendix", normalized)
+        self.assertIn("proxyfor", normalized)
+        self.assertIn("preservedor", normalized)
+        self.assertIn("whichderived", normalized)
+        self.assertIn("intheAppendix", normalized)
         self.assertIn("dog -> lion", normalized)
         self.assertNotIn("<b1>", normalized)
 
@@ -480,6 +493,7 @@ class TermValidationRegressionTests(unittest.TestCase):
         from file_task_pdf_translate.editable import TermPair
         from file_task_pdf_translate.editable import render_editable_document
         from file_task_pdf_translate.state import ensure_dirs
+        from file_task_pdf_translate.state import pending_snapshot_path
         from file_task_pdf_translate.state import paths_for
         from file_task_pdf_translate.state import read_json
         from file_task_pdf_translate.state import write_json
@@ -498,16 +512,15 @@ class TermValidationRegressionTests(unittest.TestCase):
                 {
                     "source": source,
                     "original_source": source,
-                    "token_map": [],
-                    "required_markers": [],
+                    "required_placeholders": [],
                 }
             ],
         }
         state = {
-            "pending": pending,
+            "pending_task_hash": pending["task_hash"],
             "status": "needs_ai_edit",
-            "accepted": {},
         }
+        write_json(pending_snapshot_path(paths, pending["task_hash"]), pending)
         write_json(paths.state, state)
         paths.current_translation.write_text(
             render_editable_document(
@@ -572,15 +585,14 @@ class EditableYamlWorkflowTests(unittest.TestCase):
                 "lang_in": "en",
                 "lang_out": "zh-CN",
             },
-            "accepted": {},
-            "pending": None,
+            "pending_task_hash": None,
             "status": "initialized",
         }
         write_json(paths.state, state)
         translator = FileTaskTranslator(paths, state)
 
         with self.assertRaises(FileTaskPending):
-            translator.do_translate("hello world")
+            translator.do_translate("hello <b1>world</b1>")
 
         self.assertEqual(paths.current_translation.name, "current_translation.yaml")
         self.assertTrue(paths.current_translation.exists())
@@ -592,19 +604,24 @@ class EditableYamlWorkflowTests(unittest.TestCase):
         self.assertIsNotNone(document)
         assert document is not None
         self.assertEqual(document.task, "translate")
-        self.assertEqual(document.items[0].source, "hello world")
+        self.assertEqual(document.items[0].source, "hello <b1>world</b1>")
 
         state = read_json(paths.state, None)
         paths.current_translation.write_text(
             render_editable_document(
                 "translate",
-                [EditableBlock(source="hello world", translation="你好，世界")],
+                [
+                    EditableBlock(
+                        source="hello <b1>world</b1>",
+                        translation="你好 <b1>世界</b1>",
+                    )
+                ],
                 "zh-CN",
             ),
             encoding="utf-8",
         )
 
-        task_hash = state["pending"]["task_hash"]
+        task_hash = state["pending_task_hash"]
         result = validate_pending(paths, state)
 
         self.assertTrue(result.accepted)
@@ -612,41 +629,50 @@ class EditableYamlWorkflowTests(unittest.TestCase):
             paths.accepted / f"{task_hash}.answer.json",
             None,
         )
-        self.assertEqual(accepted, [{"id": 0, "output": "你好，世界"}])
+        self.assertEqual(accepted, [{"id": 0, "output": "你好 <b1>世界</b1>"}])
+        final_state = read_json(paths.state, None)
+        self.assertIsNone(final_state["pending_task_hash"])
+        self.assertNotIn("accepted", final_state)
 
 
-    def test_translation_validation_rejects_snapshot_markers_missing_from_token_map(self) -> None:
+    def test_translation_validation_reports_placeholder_sequence_diff(self) -> None:
         from file_task_pdf_translate.editable import EditableBlock
         from file_task_pdf_translate.editable import render_editable_document
         from file_task_pdf_translate.state import ensure_dirs
+        from file_task_pdf_translate.state import pending_snapshot_path
         from file_task_pdf_translate.state import paths_for
         from file_task_pdf_translate.state import write_json
         from file_task_pdf_translate.validation import validate_pending
 
         paths = paths_for(self.tmp)
         ensure_dirs(paths)
-        source = "Eq PROTECTED_2PROTECTED_34.5"
+        source = "<b1>Eq.</b1><b2>4.5</b2>"
         pending = {
             "task_type": "translate",
-            "task_hash": "ambiguous-marker",
+            "task_hash": "placeholder-mismatch",
             "blocks": [
                 {
                     "source": source,
-                    "original_source": "<b1></b1>4.5",
-                    "token_map": [
-                        {"marker": "PROTECTED_2", "token": "<b1>"},
-                        {"marker": "PROTECTED_3", "token": "</b1>"},
-                    ],
-                    "required_markers": ["PROTECTED_2", "PROTECTED_34"],
+                    "original_source": source,
+                    "required_placeholders": ["<b1>", "</b1>", "<b2>", "</b2>"],
                 }
             ],
         }
-        state = {"pending": pending, "status": "needs_ai_edit", "accepted": {}}
+        state = {
+            "pending_task_hash": pending["task_hash"],
+            "status": "needs_ai_edit",
+        }
+        write_json(pending_snapshot_path(paths, pending["task_hash"]), pending)
         write_json(paths.state, state)
         paths.current_translation.write_text(
             render_editable_document(
                 "translate",
-                [EditableBlock(source=source, translation=source)],
+                [
+                    EditableBlock(
+                        source=source,
+                        translation="<b2>Eq.</b1><b1>4.5</b2>",
+                    )
+                ],
                 "zh-CN",
             ),
             encoding="utf-8",
@@ -656,12 +682,19 @@ class EditableYamlWorkflowTests(unittest.TestCase):
 
         self.assertFalse(result.accepted)
         self.assertEqual(result.status, "needs_ai_fix")
-        self.assertIn("PROTECTED_34", "\n".join(result.errors))
+        message = "\n".join(result.errors)
+        self.assertIn("mismatch at marker 1", message)
+        self.assertIn("order mismatch", message)
+        self.assertIn("expected <b1>", message)
+        self.assertIn("actual <b2>", message)
+        self.assertIn("expected window", message)
+        self.assertIn("actual window", message)
 
-    def test_translation_validation_strips_restored_internal_tags(self) -> None:
+    def test_translation_validation_preserves_source_placeholders_in_answer(self) -> None:
         from file_task_pdf_translate.editable import EditableBlock
         from file_task_pdf_translate.editable import render_editable_document
         from file_task_pdf_translate.state import ensure_dirs
+        from file_task_pdf_translate.state import pending_snapshot_path
         from file_task_pdf_translate.state import paths_for
         from file_task_pdf_translate.state import read_json
         from file_task_pdf_translate.state import write_json
@@ -669,20 +702,23 @@ class EditableYamlWorkflowTests(unittest.TestCase):
 
         paths = paths_for(self.tmp)
         ensure_dirs(paths)
-        source = "{{PROTECTED_1}} text"
+        source = "<b1> text"
         pending = {
             "task_type": "translate",
-            "task_hash": "strip-internal-marker",
+            "task_hash": "preserve-source-placeholder",
             "blocks": [
                 {
                     "source": source,
                     "original_source": "<b1> text",
-                    "token_map": [{"marker": "PROTECTED_1", "token": "<b1>"}],
-                    "required_markers": ["PROTECTED_1"],
+                    "required_placeholders": ["<b1>"],
                 }
             ],
         }
-        state = {"pending": pending, "status": "needs_ai_edit", "accepted": {}}
+        state = {
+            "pending_task_hash": pending["task_hash"],
+            "status": "needs_ai_edit",
+        }
+        write_json(pending_snapshot_path(paths, pending["task_hash"]), pending)
         write_json(paths.state, state)
         paths.current_translation.write_text(
             render_editable_document(
@@ -696,13 +732,14 @@ class EditableYamlWorkflowTests(unittest.TestCase):
         result = validate_pending(paths, state)
 
         self.assertTrue(result.accepted)
-        accepted = read_json(paths.accepted / "strip-internal-marker.answer.json", None)
-        self.assertEqual(accepted, [{"id": 0, "output": " text"}])
+        accepted = read_json(paths.accepted / "preserve-source-placeholder.answer.json", None)
+        self.assertEqual(accepted, [{"id": 0, "output": "<b1> text"}])
 
-    def test_translation_validation_rejects_raw_internal_tags_in_answer(self) -> None:
+    def test_translation_validation_rejects_added_placeholders(self) -> None:
         from file_task_pdf_translate.editable import EditableBlock
         from file_task_pdf_translate.editable import render_editable_document
         from file_task_pdf_translate.state import ensure_dirs
+        from file_task_pdf_translate.state import pending_snapshot_path
         from file_task_pdf_translate.state import paths_for
         from file_task_pdf_translate.state import write_json
         from file_task_pdf_translate.validation import validate_pending
@@ -716,12 +753,15 @@ class EditableYamlWorkflowTests(unittest.TestCase):
                 {
                     "source": "plain source",
                     "original_source": "plain source",
-                    "token_map": [],
-                    "required_markers": [],
+                    "required_placeholders": [],
                 }
             ],
         }
-        state = {"pending": pending, "status": "needs_ai_edit", "accepted": {}}
+        state = {
+            "pending_task_hash": pending["task_hash"],
+            "status": "needs_ai_edit",
+        }
+        write_json(pending_snapshot_path(paths, pending["task_hash"]), pending)
         write_json(paths.state, state)
         paths.current_translation.write_text(
             render_editable_document(
@@ -736,7 +776,7 @@ class EditableYamlWorkflowTests(unittest.TestCase):
 
         self.assertFalse(result.accepted)
         self.assertEqual(result.status, "needs_ai_fix")
-        self.assertIn("raw internal tag", "\n".join(result.errors))
+        self.assertIn("extra", "\n".join(result.errors))
 
 
 class TranslationSelectionRegressionTests(unittest.TestCase):
@@ -921,7 +961,7 @@ class ProgressPersistenceRegressionTests(unittest.TestCase):
 
         paths = paths_for(self.tmp)
         ensure_dirs(paths)
-        write_json(paths.state, {"status": "running", "accepted": {}})
+        write_json(paths.state, {"status": "running"})
 
         _record_pipeline_progress(
             paths,
@@ -937,9 +977,11 @@ class ProgressPersistenceRegressionTests(unittest.TestCase):
             },
         )
 
+        progress = read_json(paths.progress, None)
         state = read_json(paths.state, None)
-        self.assertEqual(state["pipeline_progress"]["stage"], "Parse Page Layout")
-        self.assertEqual(state["pipeline_progress"]["stage_current"], 1)
+        self.assertEqual(progress["stage"], "Parse Page Layout")
+        self.assertEqual(progress["stage_current"], 1)
+        self.assertNotIn("pipeline_progress", state)
 
     def test_file_task_pending_marks_stage_paused_instead_of_complete(self) -> None:
         from babeldoc.file_task_bridge import FileTaskPending
@@ -952,7 +994,7 @@ class ProgressPersistenceRegressionTests(unittest.TestCase):
 
         paths = paths_for(self.tmp)
         ensure_dirs(paths)
-        write_json(paths.state, {"status": "running", "accepted": {}})
+        write_json(paths.state, {"status": "needs_ai_edit"})
         monitor = ProgressMonitor(
             [("Translate Paragraphs", 1.0)],
             progress_change_callback=lambda **event: _record_pipeline_progress(paths, event),
@@ -964,11 +1006,14 @@ class ProgressPersistenceRegressionTests(unittest.TestCase):
                 stage.advance()
                 raise FileTaskPending("task-hash")
 
+        progress = read_json(paths.progress, None)
         state = read_json(paths.state, None)
-        self.assertEqual(state["pipeline_progress"]["event_type"], "progress_paused")
-        self.assertEqual(state["pipeline_progress"]["stage"], "Translate Paragraphs")
-        self.assertEqual(state["pipeline_progress"]["stage_current"], 1)
-        self.assertLess(state["pipeline_progress"]["stage_progress"], 100.0)
+        self.assertEqual(progress["event_type"], "progress_paused")
+        self.assertEqual(progress["stage"], "Translate Paragraphs")
+        self.assertEqual(progress["stage_current"], 1)
+        self.assertLess(progress["stage_progress"], 100.0)
+        self.assertTrue(progress["paused_for_ai"])
+        self.assertNotIn("pipeline_progress", state)
 
 
 class PreprocessCacheRegressionTests(unittest.TestCase):
@@ -1045,6 +1090,7 @@ with ThreadPoolExecutor(max_workers=1) as executor:
         from file_task_pdf_translate.editable import EditableBlock
         from file_task_pdf_translate.editable import render_editable_document
         from file_task_pdf_translate.runner import advance
+        from file_task_pdf_translate.state import pending_snapshot_path
         from file_task_pdf_translate.state import paths_for
         from file_task_pdf_translate.state import read_json
         from file_task_pdf_translate.state import write_json
@@ -1072,7 +1118,7 @@ add_formula_placehold_hint: true
                 paths = paths_for(workspace)
                 state = read_json(paths.state, {})
                 state["status"] = "needs_ai_edit"
-                state["pending"] = {
+                pending = {
                     "task_type": "translate",
                     "task_hash": "pending-cleanup",
                     "lang_out": "zh-CN",
@@ -1080,11 +1126,12 @@ add_formula_placehold_hint: true
                         {
                             "source": "hello",
                             "original_source": "hello",
-                            "token_map": [],
-                            "required_markers": [],
+                            "required_placeholders": [],
                         }
                     ],
                 }
+                state["pending_task_hash"] = pending["task_hash"]
+                write_json(pending_snapshot_path(paths, pending["task_hash"]), pending)
                 paths.current_translation.write_text(
                     render_editable_document(
                         "translate",
@@ -1172,6 +1219,9 @@ add_formula_placehold_hint: true
 
         self.assertEqual(result["status"], "done")
         self.assertNotIn("last_error", final_state)
+        self.assertNotIn("output_pdf", final_state)
+        self.assertEqual(result["progress"]["pipeline_progress"]["overall_progress"], 100.0)
+        self.assertFalse(result["progress"]["pipeline_progress"]["paused_for_ai"])
 
 
 if __name__ == "__main__":

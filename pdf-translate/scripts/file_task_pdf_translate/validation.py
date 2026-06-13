@@ -8,18 +8,15 @@ import unicodedata
 from dataclasses import dataclass
 
 from .editable import EditableBlock
-from .editable import internal_placeholder_markup_tokens
-from .editable import marker_sequence
 from .editable import parse_editable_document
+from .editable import placeholder_sequence
 from .editable import render_editable_document
-from .editable import restore_internal_placeholders
-from .editable import strip_internal_placeholder_markup
-from .editable import token_map_marker_sequence
-from .editable import unknown_marker_sequence
 from .state import WorkspacePaths
 from .state import append_trace
 from .state import archive_current_translation
 from .state import atomic_write_text
+from .state import load_pending_task
+from .state import pending_snapshot_path
 from .state import save_accepted_answer
 from .state import write_json
 
@@ -33,9 +30,23 @@ class ValidationResult:
 
 
 def validate_pending(paths: WorkspacePaths, state: dict) -> ValidationResult:
-    pending = state.get("pending")
-    if not pending:
+    pending_hash = state.get("pending_task_hash")
+    pending = load_pending_task(paths, state)
+    if not pending_hash:
         return ValidationResult(False, "no_pending", [], [])
+    if pending is None:
+        snapshot_path = pending_snapshot_path(paths, pending_hash)
+        errors = [f"pending task snapshot is missing: {snapshot_path}"]
+        state["status"] = "needs_ai_fix"
+        write_json(paths.state, state)
+        append_trace(
+            paths,
+            "answer_rejected",
+            task_hash=pending_hash,
+            reason="missing_pending_snapshot",
+            errors=errors,
+        )
+        return ValidationResult(False, "needs_ai_fix", errors, [])
 
     if not paths.current_translation.exists():
         _restore_from_snapshot(paths, pending)
@@ -82,7 +93,7 @@ def validate_pending(paths: WorkspacePaths, state: dict) -> ValidationResult:
         return ValidationResult(False, "needs_ai_fix", errors, [])
 
     errors = _validate_sources(pending, blocks)
-    errors.extend(_validate_snapshot_markers(pending))
+    errors.extend(_validate_snapshot_placeholders(pending))
     if errors:
         append_trace(
             paths,
@@ -151,40 +162,18 @@ def _validate_sources(pending: dict, blocks: list[EditableBlock]) -> list[str]:
     return errors
 
 
-def _validate_snapshot_markers(pending: dict) -> list[str]:
+def _validate_snapshot_placeholders(pending: dict) -> list[str]:
     errors = []
     for index, snapshot in enumerate(pending["blocks"], start=1):
-        token_map = snapshot.get("token_map", [])
-        known_markers = token_map_marker_sequence(token_map)
-        required_markers = snapshot.get("required_markers", [])
-        unknown_required = [
-            marker for marker in required_markers if marker not in known_markers
-        ]
-        for marker in unknown_required:
+        expected = snapshot.get("required_placeholders", [])
+        source_placeholders = placeholder_sequence(snapshot["source"])
+        if source_placeholders != expected:
             errors.append(
-                f"source block {index} requires unknown protected marker {marker}"
-            )
-
-        duplicate_required = sorted(
-            {
-                marker
-                for marker in required_markers
-                if required_markers.count(marker) > 1
-            }
-        )
-        for marker in duplicate_required:
-            errors.append(
-                f"source block {index} repeats impossible protected marker {marker}"
-            )
-
-        source_markers = marker_sequence(snapshot["source"], token_map)
-        if source_markers != required_markers:
-            errors.append(
-                f"source block {index} protected marker snapshot is inconsistent"
-            )
-        if source_markers != known_markers:
-            errors.append(
-                f"source block {index} protected marker map is inconsistent"
+                _placeholder_sequence_error(
+                    f"source block {index} placeholder snapshot",
+                    expected,
+                    source_placeholders,
+                )
             )
     return errors
 
@@ -201,8 +190,8 @@ def _build_answer_summary(
         "block_count": len(blocks),
         "filled_translation_blocks": sum(1 for text in translations if text.strip()),
         "translation_characters": sum(len(text) for text in translations),
-        "protected_marker_count": sum(
-            len(marker_sequence(text)) for text in translations
+        "placeholder_count": sum(
+            len(placeholder_sequence(text)) for text in translations
         ),
         "warning_count": len(warnings),
     }
@@ -225,37 +214,52 @@ def _build_translation_answer(
         if not block.translation.strip():
             errors.append(f"translation block {index} is empty")
             continue
-        raw_internal_tags = internal_placeholder_markup_tokens(block.translation)
-        if raw_internal_tags:
+        expected_placeholders = snapshot["required_placeholders"]
+        actual_placeholders = placeholder_sequence(block.translation)
+        if actual_placeholders != expected_placeholders:
             errors.append(
-                f"translation block {index} contains raw internal tag "
-                f"{raw_internal_tags[0]}; use protected markers from the source"
-            )
-            continue
-        expected_markers = snapshot["required_markers"]
-        token_map = snapshot.get("token_map", [])
-        unknown_markers = unknown_marker_sequence(block.translation, token_map)
-        if unknown_markers:
-            errors.append(
-                f"translation block {index} contains unknown protected marker "
-                + ", ".join(unknown_markers)
-            )
-            continue
-        actual_markers = marker_sequence(block.translation, token_map)
-        if actual_markers != expected_markers:
-            errors.append(
-                f"translation block {index} protected marker sequence mismatch"
+                _placeholder_sequence_error(
+                    f"translation block {index} placeholder sequence",
+                    expected_placeholders,
+                    actual_placeholders,
+                )
             )
             continue
         if block.translation.strip() == block.source.strip():
             warnings.append(f"translation block {index} is identical to source")
-        restored = restore_internal_placeholders(
-            block.translation,
-            token_map,
-        )
-        output = strip_internal_placeholder_markup(restored)
-        answer.append({"id": index - 1, "output": output})
+        answer.append({"id": index - 1, "output": block.translation})
     return answer, errors, warnings
+
+
+def _placeholder_sequence_error(
+    label: str,
+    expected: list[str],
+    actual: list[str],
+) -> str:
+    diff_index = _first_sequence_diff_index(expected, actual)
+    window_start = max(diff_index - 2, 0)
+    window_end = diff_index + 3
+    expected_item = expected[diff_index] if diff_index < len(expected) else "<end>"
+    actual_item = actual[diff_index] if diff_index < len(actual) else "<end>"
+    if len(actual) < len(expected):
+        kind = "missing"
+    elif len(actual) > len(expected):
+        kind = "extra"
+    else:
+        kind = "order mismatch"
+    return (
+        f"{label} mismatch at marker {diff_index + 1}: {kind}; "
+        f"expected {expected_item}, actual {actual_item}; "
+        f"expected window {expected[window_start:window_end]}, "
+        f"actual window {actual[window_start:window_end]}"
+    )
+
+
+def _first_sequence_diff_index(expected: list[str], actual: list[str]) -> int:
+    for index, (expected_item, actual_item) in enumerate(zip(expected, actual)):
+        if expected_item != actual_item:
+            return index
+    return min(len(expected), len(actual))
 
 
 def _build_term_answer(

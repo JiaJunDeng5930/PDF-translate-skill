@@ -8,6 +8,7 @@ import json
 import os
 import shutil
 import time
+import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
@@ -26,6 +27,7 @@ class WorkspacePaths:
     root: Path
     private: Path
     state: Path
+    progress: Path
     trace: Path
     config: Path
     current_translation: Path
@@ -52,6 +54,7 @@ def paths_for(root: Path) -> WorkspacePaths:
         root=root,
         private=private,
         state=private / "state.json",
+        progress=private / "progress.json",
         trace=private / "trace.jsonl",
         config=root / "pdf_translate.yaml",
         current_translation=root / "current_translation.yaml",
@@ -77,9 +80,23 @@ def ensure_dirs(paths: WorkspacePaths) -> None:
 
 
 def atomic_write_text(path: Path, text: str) -> None:
-    tmp = path.with_name(f"{path.name}.tmp")
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
     tmp.write_text(text, encoding="utf-8", newline="\n")
-    os.replace(tmp, path)
+    try:
+        for attempt in range(6):
+            try:
+                os.replace(tmp, path)
+                return
+            except PermissionError:
+                if attempt == 5:
+                    raise
+                time.sleep(0.05 * (attempt + 1))
+    finally:
+        try:
+            if tmp.exists():
+                tmp.unlink()
+        except OSError:
+            pass
 
 
 def read_json(path: Path, default):
@@ -124,12 +141,8 @@ def default_state(config_snapshot: dict) -> dict:
     return {
         "version": STATE_VERSION,
         "config": config_snapshot,
-        "config_hash": config_snapshot["config_hash"],
-        "input_pdf": config_snapshot["input_pdf"],
-        "accepted": {},
-        "pending": None,
+        "pending_task_hash": None,
         "status": "initialized",
-        "output_pdf": None,
         "output_pdfs": {},
         "advance_count": 0,
     }
@@ -153,9 +166,23 @@ def load_or_init_state(
         input_pdf=config_snapshot["input_pdf"],
         config_hash=config_snapshot["config_hash"],
         config=config_snapshot,
-        babeldoc_config=config_snapshot["babeldoc_config"],
     )
     return state
+
+
+def pending_snapshot_path(paths: WorkspacePaths, task_hash: str) -> Path:
+    return paths.tasks / f"{task_hash}.snapshot.json"
+
+
+def load_pending_task(paths: WorkspacePaths, state: dict) -> dict | None:
+    task_hash = state.get("pending_task_hash")
+    if not task_hash:
+        return None
+    return read_json(pending_snapshot_path(paths, task_hash), None)
+
+
+def answer_path(paths: WorkspacePaths, task_hash: str) -> Path:
+    return paths.accepted / f"{task_hash}.answer.json"
 
 
 def save_pending_task(
@@ -165,9 +192,10 @@ def save_pending_task(
     blocks: list[EditableBlock],
 ) -> None:
     task_hash = snapshot["task_hash"]
-    state["pending"] = snapshot
+    state["pending_task_hash"] = task_hash
     state["status"] = "needs_ai_edit"
-    write_json(paths.tasks / f"{task_hash}.snapshot.json", snapshot)
+    state.pop("last_error", None)
+    write_json(pending_snapshot_path(paths, task_hash), snapshot)
     atomic_write_text(
         paths.current_translation,
         render_editable_document(
@@ -202,16 +230,12 @@ def save_accepted_answer(
     answer,
     summary: dict | None = None,
 ):
-    answer_file = paths.accepted / f"{task_hash}.answer.json"
+    answer_file = answer_path(paths, task_hash)
     write_json(answer_file, answer)
     answer_hash = stable_hash(answer)
-    state["accepted"][task_hash] = {
-        "answer_file": str(answer_file),
-        "answer_hash": answer_hash,
-        "summary": summary or {},
-    }
-    state["pending"] = None
+    state["pending_task_hash"] = None
     state["status"] = "running"
+    state.pop("last_error", None)
     write_json(paths.state, state)
     append_trace(
         paths,
@@ -223,10 +247,13 @@ def save_accepted_answer(
 
 
 def load_accepted_answer(paths: WorkspacePaths, state: dict, task_hash: str):
-    entry = state.get("accepted", {}).get(task_hash)
-    if not entry:
-        return None
-    return read_json(Path(entry["answer_file"]), None)
+    return read_json(answer_path(paths, task_hash), None)
+
+
+def accepted_answer_count(paths: WorkspacePaths) -> int:
+    if not paths.accepted.exists():
+        return 0
+    return sum(1 for _path in paths.accepted.glob("*.answer.json"))
 
 
 def _new_lock_metadata(paths: WorkspacePaths, pid: int | None = None) -> dict:

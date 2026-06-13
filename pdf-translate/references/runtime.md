@@ -13,8 +13,9 @@ Preparation-stage config:
 Translation-stage state:
 
 - `current_translation.yaml`: the only AI-editable file while a task is pending.
-- `.pdf_translate/state.json`: frozen config, pending task, accepted answer index, final outputs.
-- `.pdf_translate/tasks/`: snapshots for pending tasks.
+- `.pdf_translate/state.json`: business state only: frozen config, pending task hash, status, final output map, and advance count.
+- `.pdf_translate/progress.json`: latest pipeline progress snapshot.
+- `.pdf_translate/tasks/`: pending task snapshots keyed by task hash.
 - `.pdf_translate/accepted_answers/`: accepted editable files and JSON answers replayed into the internal PDF pipeline.
 - `.pdf_translate/rejected_answers/`: damaged editable files archived before template restoration.
 - `.pdf_translate/trace.jsonl`: compact config, progress, validation, answer, and output events.
@@ -22,7 +23,7 @@ Translation-stage state:
 
 The runtime re-enters the internal PDF pipeline on each advance and replays accepted answers by stable task hash. File-task preprocessing checkpoints live under `.pdf_translate/babeldoc_work/<input-stem>/file_task_preprocess_cache/` and store the normalized input PDF, mediabox data, and IL XML after completed preprocessing stages. A cache hit with matching `config_hash` and input PDF hash resumes after the latest saved stage.
 
-The synchronous BabelDOC progress monitor writes the latest pipeline stage into `state.json` as `pipeline_progress`. Stage starts, ends, and AI pauses are also recorded in `trace.jsonl`, so long preprocessing runs expose their current stage and pending AI edits report `paused_for_ai`.
+The synchronous BabelDOC progress monitor writes the latest pipeline stage into `.pdf_translate/progress.json`. Stage starts, ends, and AI pauses are also recorded in `trace.jsonl`. `paused_for_ai` is derived from `status in {"needs_ai_edit", "needs_ai_fix"}`. A `done` state reports terminal progress with `overall_progress: 100` and `paused_for_ai: false`.
 
 The BabelDOC-derived pipeline files with file-task changes are:
 
@@ -36,10 +37,10 @@ Validation invariants:
 - Editable task parsing uses YAML with top-level `task` and `items` fields.
 - Item count, order, and every `source` field must match the saved snapshot.
 - Translation tasks require every `translation` field to be non-empty.
-- Protected markers render with ASCII braces, for example `{{FORMULA_1}}` and `{{PROTECTED_1}}`.
-- Required protected marker sequences are derived from each block's `token_map` by exact marker scanning.
-- Validation rejects markers outside the `token_map`, inconsistent snapshot marker sequences, duplicate required markers, and raw internal `<bN>` tags typed into translations.
-- Accepted translation answers restore known markers, then strip internal `<bN>` tags before replaying JSON answers into the PDF pipeline.
+- BabelDOC placeholders remain visible in editable YAML, for example `<b1>` and `</b1>`.
+- Required placeholder sequences are derived from each block snapshot by exact `<bN>` scanning.
+- Validation compares the saved snapshot sequence with each translation sequence and reports the first mismatch position, expected item, actual item, and local windows.
+- Accepted translation answers replay the translation text as written, including required placeholders.
 - Completed output PDFs are text-scanned for visible `<bN>`, `</bN>`, `{{FORMULA_N}}`, and `{{PROTECTED_N}}` markers before `state.json` is marked `done`.
 - Term extraction tasks require `terms` to be a YAML list of mappings with
   `source` and `target` fields. Source term matching normalizes PDF line-break

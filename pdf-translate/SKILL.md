@@ -50,7 +50,7 @@ After a pending task exists, the AI-editable surface is `current_translation.yam
 
 ## Editable File Rules
 
-The editable file is YAML. Keep every `source` field unchanged. Preserve protected tokens such as `{{FORMULA_1}}` and `{{PROTECTED_1}}` in the same order, including both braces.
+The editable file is YAML. Keep every `source` field unchanged. Preserve placeholders such as `<b1>` and `</b1>` exactly, in the same order. These placeholders represent formulas, superscripts, affiliation numbers, protected content, or PDF layout fragments.
 
 For translation tasks, write the translation in the configured `lang_out`.
 

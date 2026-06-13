@@ -11,9 +11,8 @@ from babeldoc.file_task_bridge import FileTaskPending
 from babeldoc.translator.translator import BaseTranslator
 
 from .editable import EditableBlock
-from .editable import marker_sequence
 from .editable import normalize_extracted_pdf_text
-from .editable import replace_internal_placeholders
+from .editable import placeholder_sequence
 from .state import WorkspacePaths
 from .state import load_accepted_answer
 from .state import save_pending_task
@@ -88,18 +87,12 @@ class FileTaskTranslator(BaseTranslator):
         blocks = []
         for item in items:
             original_source = item.get("input", "")
-            display_input = normalize_extracted_pdf_text(original_source)
-            formula_tokens = set((item.get("formula_placeholders_hint") or {}).keys())
-            display_source, token_map = replace_internal_placeholders(
-                display_input,
-                formula_tokens,
-            )
+            display_source = normalize_extracted_pdf_text(original_source)
             blocks.append(
                 {
                     "source": display_source,
                     "original_source": original_source,
-                    "token_map": token_map,
-                    "required_markers": marker_sequence(display_source, token_map),
+                    "required_placeholders": placeholder_sequence(display_source),
                     "layout_label": item.get("layout_label"),
                 }
             )
@@ -122,14 +115,12 @@ class FileTaskTranslator(BaseTranslator):
     def _term_task_from_chunks(self, chunks: list[str]) -> dict:
         blocks = []
         for chunk in chunks:
-            display_input = normalize_extracted_pdf_text(chunk)
-            display_source, token_map = replace_internal_placeholders(display_input)
+            display_source = normalize_extracted_pdf_text(chunk)
             blocks.append(
                 {
                     "source": display_source,
                     "original_source": chunk,
-                    "token_map": token_map,
-                    "required_markers": marker_sequence(display_source, token_map),
+                    "required_placeholders": placeholder_sequence(display_source),
                 }
             )
         hash_payload = {

@@ -169,7 +169,6 @@ def _normalize_config(root: Path, data: dict) -> dict:
         "add_formula_placehold_hint": add_formula_placehold_hint,
     }
     snapshot["config_hash"] = _stable_hash(snapshot)
-    snapshot["babeldoc_config"] = babeldoc_config_summary(snapshot)
     return snapshot
 
 
