@@ -44,7 +44,7 @@ from babeldoc.pdfminer.psparser import PSStackParser
 from babeldoc.pdfminer.psparser import PSStackType
 from babeldoc.pdfminer.psparser import keyword_name
 from babeldoc.pdfminer.psparser import literal_name
-from babeldoc.pdfminer.utils import MATRIX_IDENTITY, apply_matrix_pt
+from babeldoc.pdfminer.utils import MATRIX_IDENTITY
 from babeldoc.pdfminer.utils import Matrix
 from babeldoc.pdfminer.utils import PathSegment
 from babeldoc.pdfminer.utils import Point

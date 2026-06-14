@@ -6,9 +6,7 @@
 # Modified on 2026-06-09 to propagate file-backed AI task pauses through
 # the pdf-translate skill advance loop.
 
-import asyncio
 import copy
-import hashlib
 import io
 import logging
 import pathlib
@@ -16,20 +14,16 @@ import re
 import shutil
 import threading
 import time
-from asyncio import CancelledError
 from pathlib import Path
 from typing import Any
 
 import pymupdf
 from pymupdf import Document
 
-from babeldoc import asynchronize
-from babeldoc.assets.assets import warmup
 from babeldoc.babeldoc_exception.BabelDOCException import ExtractTextError
 from babeldoc.babeldoc_exception.BabelDOCException import (
     InputFileGeneratedByBabelDOCError,
 )
-from babeldoc.const import CACHE_FOLDER
 from babeldoc.const import WATERMARK_VERSION
 from babeldoc.const import close_process_pool
 from babeldoc.format.pdf.document_il import il_version_1
@@ -55,7 +49,7 @@ from babeldoc.format.pdf.document_il.midend.styles_and_formulas import StylesAnd
 from babeldoc.format.pdf.document_il.midend.table_parser import TableParser
 from babeldoc.format.pdf.document_il.midend.typesetting import Typesetting
 from babeldoc.format.pdf.document_il.utils.fontmap import FontMapper
-from babeldoc.format.pdf.document_il.xml_converter import XMLConverter
+from babeldoc.format.pdf.document_il.json_converter import ILJsonConverter
 from babeldoc.format.pdf.result_merger import ResultMerger
 from babeldoc.format.pdf.split_manager import SplitManager
 from babeldoc.format.pdf.translation_config import TranslateResult
@@ -74,7 +68,6 @@ TRANSLATE_STAGES = [
     (TableParser.stage_name, 1.0),  # Parse Table
     (ParagraphFinder.stage_name, 6.26),  # Parse Paragraphs
     (StylesAndFormulas.stage_name, 1.66),  # Parse Formulas and Styles
-    # (RemoveDescent.stage_name, 0.15),  # Remove Char Descent
     (AutomaticTermExtractor.stage_name, 30.0),  # Extract Terms
     (ILTranslator.stage_name, 46.96),  # Translate Paragraphs
     (Typesetting.stage_name, 4.71),  # Typesetting
@@ -250,38 +243,6 @@ def fix_cmap(translate_result: TranslateResult, translate_config: TranslationCon
         shutil.move(temp_path, path)
 
 
-def verify_file_hash(file_path: str, expected_hash: str) -> bool:
-    """Verify the SHA256 hash of a file."""
-    sha256_hash = hashlib.sha256()
-    with Path(file_path).open("rb") as f:
-        # Read the file in chunks to handle large files efficiently
-        for byte_block in iter(lambda: f.read(4096), b""):
-            sha256_hash.update(byte_block)
-    return sha256_hash.hexdigest() == expected_hash
-
-
-def _save_file_task_preprocess_cache(
-    translation_config: TranslationConfig,
-    xml_converter: XMLConverter,
-    stage: str,
-    temp_pdf_path: str | Path,
-    docs,
-    mediabox_data: dict,
-) -> None:
-    return
-
-
-def _load_file_task_preprocess_cache(
-    translation_config: TranslationConfig,
-    xml_converter: XMLConverter,
-) -> dict[str, Any] | None:
-    return None
-
-
-def _file_task_cache_has_stage(cached_stage: str | None, stage: str) -> bool:
-    return False
-
-
 def translator_supports_llm(translator) -> bool:
     if not translator or not hasattr(translator, "do_llm_translate"):
         return False
@@ -341,86 +302,6 @@ def get_translation_stage(
 
     result = [x for x in result if x[0] not in should_remove]
     return result
-
-
-async def async_translate(translation_config: TranslationConfig):
-    """Asynchronously translate a PDF file with real-time progress reporting.
-
-    This function yields progress events that can be used to update progress bars
-    or other UI elements. The events are dictionaries with the following structure:
-
-    - progress_start: {
-        "type": "progress_start",
-        "stage": str,              # Stage name
-        "stage_progress": float,   # Always 0.0
-        "stage_current": int,      # Current count (0)
-        "stage_total": int         # Total items in stage
-    }
-    - progress_update: {
-        "type": "progress_update",
-        "stage": str,              # Stage name
-        "stage_progress": float,   # Stage progress (0-100)
-        "stage_current": int,      # Current items processed
-        "stage_total": int,        # Total items in stage
-        "overall_progress": float  # Overall progress (0-100)
-    }
-    - progress_end: {
-        "type": "progress_end",
-        "stage": str,              # Stage name
-        "stage_progress": float,   # Always 100.0
-        "stage_current": int,      # Equal to stage_total
-        "stage_total": int,        # Total items processed
-        "overall_progress": float  # Overall progress (0-100)
-    }
-    - finish: {
-        "type": "finish",
-        "translate_result": TranslateResult
-    }
-    - error: {
-        "type": "error",
-        "error": str
-    }
-
-    Args:
-        translation_config: Configuration for the translation process
-
-    Yields:
-        dict: Progress events during translation
-
-    Raises:
-        CancelledError: If the translation is cancelled
-        Exception: Any other errors during translation
-    """
-    loop = asyncio.get_running_loop()
-    callback = asynchronize.AsyncCallback()
-
-    finish_event = asyncio.Event()
-    cancel_event = threading.Event()
-    with ProgressMonitor(
-        get_translation_stage(translation_config),
-        progress_change_callback=callback.step_callback,
-        finish_callback=callback.finished_callback,
-        finish_event=finish_event,
-        cancel_event=cancel_event,
-        loop=loop,
-        report_interval=translation_config.report_interval,
-    ) as pm:
-        future = loop.run_in_executor(None, do_translate, pm, translation_config)
-        try:
-            async for event in callback:
-                event = event.kwargs
-                yield event
-                if event["type"] == "error":
-                    break
-        except CancelledError:
-            cancel_event.set()
-        except KeyboardInterrupt:
-            logger.info("Translation cancelled by user through keyboard interrupt")
-            cancel_event.set()
-    if cancel_event.is_set():
-        future.cancel()
-    logger.info("Waiting for translation to finish...")
-    await finish_event.wait()
 
 
 class MemoryMonitor:
@@ -791,15 +672,6 @@ def migrate_toc(
         logger.info("No TOC found in the original PDF, skipping migration.")
         return
 
-    if translation_config.only_include_translated_page:
-        total_page = set(range(0, len(old_doc)))
-
-        pages_to_translate = {
-            i for i in len(old_doc) if translation_config.should_translate_page(i + 1)
-        }
-
-        should_removed_page = list(total_page - pages_to_translate)
-
     files = {
         translate_result.dual_pdf_path,
         # translate_result.mono_pdf_path,
@@ -903,9 +775,8 @@ def _do_translate_single(
     doc_pdf2zh = open_pdf_with_save_fallback(original_pdf_path, temp_pdf_path)
 
     # Fix null xref in PDF file
-    invalid_pages = []
     try:
-        invalid_pages = fix_null_page_content(doc_pdf2zh)
+        fix_null_page_content(doc_pdf2zh)
         fix_filter(doc_pdf2zh)
         fix_null_xref(doc_pdf2zh)
     except Exception:
@@ -934,43 +805,24 @@ def _do_translate_single(
     #         )
     #         raise ScannedPDFError("Scanned PDF detected.")
 
-    xml_converter = XMLConverter()
-    cached_preprocess = _load_file_task_preprocess_cache(
-        translation_config,
-        xml_converter,
+    json_converter = ILJsonConverter()
+    logger.debug(f"start parse il from {temp_pdf_path}")
+    from babeldoc.format.pdf.new_parser.native_parse import (
+        parse_prepared_pdf_with_new_parser_to_legacy_ir,
     )
-    cached_stage = None
-    if cached_preprocess:
-        docs = cached_preprocess["docs"]
-        mediabox_data = cached_preprocess["mediabox_data"]
-        cached_stage = cached_preprocess["stage"]
-        logger.info("loaded file-task preprocess cache at stage %s", cached_stage)
-    else:
-        logger.debug(f"start parse il from {temp_pdf_path}")
-        from babeldoc.format.pdf.new_parser.native_parse import (
-            parse_prepared_pdf_with_new_parser_to_legacy_ir,
-        )
 
-        docs = parse_prepared_pdf_with_new_parser_to_legacy_ir(
-            temp_pdf_path,
-            config=translation_config,
-            doc_pdf=doc_pdf2zh,
-        )
-        logger.debug(f"finish parse il from {temp_pdf_path}")
-        logger.debug(f"finish create il from {temp_pdf_path}")
-        _save_file_task_preprocess_cache(
-            translation_config,
-            xml_converter,
-            "create_il",
-            temp_pdf_path,
-            docs,
-            mediabox_data,
-        )
+    docs = parse_prepared_pdf_with_new_parser_to_legacy_ir(
+        temp_pdf_path,
+        config=translation_config,
+        doc_pdf=doc_pdf2zh,
+    )
+    logger.debug(f"finish parse il from {temp_pdf_path}")
+    logger.debug(f"finish create il from {temp_pdf_path}")
     if translation_config.only_include_translated_page and not docs.page:
         return None
 
     if translation_config.debug:
-        xml_converter.write_json(
+        json_converter.write_json(
             docs,
             translation_config.get_working_file_path("create_il.debug.json"),
         )
@@ -993,101 +845,48 @@ def _do_translate_single(
     # 检测是否为扫描文件
     if translation_config.skip_scanned_detection:
         logger.debug("skipping scanned file detection")
-    elif _file_task_cache_has_stage(cached_stage, "detect_scanned_file"):
-        logger.info("skipping scanned detection from file-task preprocess cache")
     else:
         logger.debug("start detect scanned file")
         DetectScannedFile(translation_config).process(
             docs, temp_pdf_path, mediabox_data
         )
-        _save_file_task_preprocess_cache(
-            translation_config,
-            xml_converter,
-            "detect_scanned_file",
-            temp_pdf_path,
-            docs,
-            mediabox_data,
-        )
         logger.debug("finish detect scanned file")
         if translation_config.debug:
-            xml_converter.write_json(
+            json_converter.write_json(
                 docs,
                 translation_config.get_working_file_path("detect_scanned_file.json"),
             )
 
     # Generate layouts for all pages
-    if _file_task_cache_has_stage(cached_stage, "layout_generator"):
-        logger.info("skipping layout generation from file-task preprocess cache")
-    else:
-        logger.debug("start generating layouts")
-        docs = LayoutParser(translation_config).process(docs, doc_pdf2zh)
-        logger.debug("finish generating layouts")
-        close_process_pool()
-        _save_file_task_preprocess_cache(
-            translation_config,
-            xml_converter,
-            "layout_generator",
-            temp_pdf_path,
-            docs,
-            mediabox_data,
-        )
+    logger.debug("start generating layouts")
+    docs = LayoutParser(translation_config).process(docs, doc_pdf2zh)
+    logger.debug("finish generating layouts")
+    close_process_pool()
     if translation_config.debug:
-        xml_converter.write_json(
+        json_converter.write_json(
             docs,
             translation_config.get_working_file_path("layout_generator.json"),
         )
 
-    if _file_task_cache_has_stage(cached_stage, "table_parser"):
-        logger.info("skipping table parser from file-task preprocess cache")
-    elif translation_config.table_model:
+    if translation_config.table_model:
         docs = TableParser(translation_config).process(docs, doc_pdf2zh)
         logger.debug("finish table parser")
-        _save_file_task_preprocess_cache(
-            translation_config,
-            xml_converter,
-            "table_parser",
-            temp_pdf_path,
-            docs,
-            mediabox_data,
-        )
         if translation_config.debug:
-            xml_converter.write_json(
+            json_converter.write_json(
                 docs,
                 translation_config.get_working_file_path("table_parser.json"),
             )
-    if _file_task_cache_has_stage(cached_stage, "paragraph_finder"):
-        logger.info("skipping paragraph finder from file-task preprocess cache")
-    else:
-        ParagraphFinder(translation_config).process(docs)
-        logger.debug(f"finish paragraph finder from {temp_pdf_path}")
-        _save_file_task_preprocess_cache(
-            translation_config,
-            xml_converter,
-            "paragraph_finder",
-            temp_pdf_path,
-            docs,
-            mediabox_data,
-        )
+    ParagraphFinder(translation_config).process(docs)
+    logger.debug(f"finish paragraph finder from {temp_pdf_path}")
     if translation_config.debug:
-        xml_converter.write_json(
+        json_converter.write_json(
             docs,
             translation_config.get_working_file_path("paragraph_finder.json"),
         )
-    if _file_task_cache_has_stage(cached_stage, "styles_and_formulas"):
-        logger.info("skipping styles and formulas from file-task preprocess cache")
-    else:
-        StylesAndFormulas(translation_config).process(docs)
-        logger.debug(f"finish styles and formulas from {temp_pdf_path}")
-        _save_file_task_preprocess_cache(
-            translation_config,
-            xml_converter,
-            "styles_and_formulas",
-            temp_pdf_path,
-            docs,
-            mediabox_data,
-        )
+    StylesAndFormulas(translation_config).process(docs)
+    logger.debug(f"finish styles and formulas from {temp_pdf_path}")
     if translation_config.debug:
-        xml_converter.write_json(
+        json_converter.write_json(
             docs,
             translation_config.get_working_file_path("styles_and_formulas.json"),
         )
@@ -1116,14 +915,14 @@ def _do_translate_single(
         logger.info("skip ILTranslator")
 
     if translation_config.debug:
-        xml_converter.write_json(
+        json_converter.write_json(
             docs,
             translation_config.get_working_file_path("il_translated.json"),
         )
 
     if translation_config.debug:
         AddDebugInformation(translation_config).process(docs)
-        xml_converter.write_json(
+        json_converter.write_json(
             docs,
             translation_config.get_working_file_path("add_debug_information.json"),
         )
@@ -1147,7 +946,7 @@ def _do_translate_single(
     Typesetting(translation_config).typesetting_document(docs)
     logger.debug(f"finish typsetting from {temp_pdf_path}")
     if translation_config.debug:
-        xml_converter.write_json(
+        json_converter.write_json(
             docs,
             translation_config.get_working_file_path("typsetting.json"),
         )
@@ -1266,21 +1065,3 @@ def merge_watermark_doc(
     return new_save_path
 
 
-def download_font_assets():
-    warmup()
-
-
-def create_cache_folder():
-    try:
-        logger.debug(f"create cache folder at {CACHE_FOLDER}")
-        Path(CACHE_FOLDER).mkdir(parents=True, exist_ok=True)
-    except OSError:
-        logger.critical(
-            f"Failed to create cache folder at {CACHE_FOLDER}",
-            exc_info=True,
-        )
-        exit(1)
-
-
-def init():
-    create_cache_folder()

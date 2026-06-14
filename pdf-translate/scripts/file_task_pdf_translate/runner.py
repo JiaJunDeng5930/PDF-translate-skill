@@ -226,6 +226,7 @@ def _build_translation_config(
 ) -> TranslationConfig:
     config = state["config"]
     no_dual, no_mono = output_flags(config["output_mode"])
+    table_model = _build_table_model(config.get("table_model"))
     active_page = _active_page(state)
     page_text = str(active_page) if active_page is not None else config["pages"]
     output_dir = paths.output
@@ -241,6 +242,7 @@ def _build_translation_config(
         lang_in=config["lang_in"],
         lang_out=config["lang_out"],
         doc_layout_model=None,
+        table_model=table_model,
         pages=page_text,
         output_dir=output_dir,
         working_dir=working_dir,
@@ -254,6 +256,16 @@ def _build_translation_config(
         primary_font_family=config["primary_font_family"],
         report_interval=2.0,
     )
+
+
+def _build_table_model(name: str | None):
+    if name is None:
+        return None
+    if name == "rapidocr":
+        from babeldoc.docvision.table_detection.rapidocr import RapidOCRModel
+
+        return RapidOCRModel()
+    raise ValueError(f"unknown table_model: {name}")
 
 
 def _ensure_page_plan(paths, state: dict) -> bool:

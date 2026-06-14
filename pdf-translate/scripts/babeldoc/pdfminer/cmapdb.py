@@ -9,10 +9,7 @@ More information is available on:
 
 """
 
-import gzip
 import logging
-import os
-import os.path
 import pickle as pickle
 import struct
 import sys

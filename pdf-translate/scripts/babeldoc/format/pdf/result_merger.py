@@ -34,13 +34,9 @@ class ResultMerger:
         mono_file_name_no_watermark = (
             f"{basename}{debug_suffix}.{self.config.lang_out}.mono.pdf"
         )
-        dual_file_name_no_watermark = (
-            f"{basename}{debug_suffix}.{self.config.lang_out}.dual.pdf"
-        )
         results = {k: v for k, v in results.items() if v is not None}
         # Sort results by part index
         sorted_results = dict(sorted(results.items()))
-        first_result = next(iter(sorted_results.values()))
 
         # Initialize paths for merged files
         merged_mono_path = None

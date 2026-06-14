@@ -63,6 +63,7 @@ version: 1
 output_mode: booklet
 watermark_output_mode: clean
 primary_font_family: display
+table_model: unsupported
 """.strip()
             + "\n",
         )
@@ -79,6 +80,7 @@ primary_font_family: display
         self.assertIn("output_mode must be one of", message)
         self.assertIn("watermark_output_mode must be one of", message)
         self.assertIn("primary_font_family must be", message)
+        self.assertIn("table_model must be null or rapidocr", message)
 
     def test_config_maps_language_output_and_watermark_to_babeldoc_params(self) -> None:
         from babeldoc.format.pdf.translation_config import WatermarkOutputMode
@@ -99,6 +101,7 @@ watermark_output_mode: both
 auto_extract_glossary: false
 primary_font_family: serif
 add_formula_placehold_hint: false
+table_model: rapidocr
 """.strip()
             + "\n",
         )
@@ -128,6 +131,7 @@ add_formula_placehold_hint: false
         self.assertFalse(config.auto_extract_glossary)
         self.assertEqual(config.primary_font_family, "serif")
         self.assertFalse(config.add_formula_placehold_hint)
+        self.assertEqual(config.table_model.__class__.__name__, "RapidOCRModel")
 
     def test_initialized_state_keeps_runtime_sources_single_owned(self) -> None:
         from file_task_pdf_translate.config import load_workspace_config
@@ -1344,55 +1348,6 @@ class ProgressPersistenceRegressionTests(unittest.TestCase):
         self.assertLess(progress["stage_progress"], 100.0)
         self.assertTrue(progress["paused_for_ai"])
         self.assertNotIn("pipeline_progress", state)
-
-
-class PreprocessCacheRegressionTests(unittest.TestCase):
-    def setUp(self) -> None:
-        self.tmp = Path(tempfile.mkdtemp(prefix="pdf-translate-cache-test-"))
-        self.addCleanup(lambda: shutil.rmtree(self.tmp, ignore_errors=True))
-
-    def test_file_task_preprocess_cache_is_disabled_for_file_task_workflow(self) -> None:
-        from babeldoc.format.pdf.high_level import _load_file_task_preprocess_cache
-        from babeldoc.format.pdf.high_level import _save_file_task_preprocess_cache
-
-        source_pdf = self.tmp / "paper.pdf"
-        source_pdf.write_bytes(b"source-pdf")
-        normalized_pdf = self.tmp / "input.pdf"
-        normalized_pdf.write_bytes(b"normalized-pdf")
-        config = SimpleNamespace(
-            file_task_workflow=True,
-            file_task_preprocess_cache_key="config-hash",
-            input_file=source_pdf,
-            only_parse_generate_pdf=False,
-            split_strategy=None,
-            working_dir=self.tmp / "work",
-        )
-
-        class Converter:
-            wrote_xml = False
-
-            def write_xml(self, document, path):
-                self.wrote_xml = True
-                Path(path).write_text(document["payload"], encoding="utf-8")
-
-            def read_xml(self, path):
-                return {"payload": Path(path).read_text(encoding="utf-8")}
-
-        converter = Converter()
-        _save_file_task_preprocess_cache(
-            config,
-            converter,
-            "styles_and_formulas",
-            normalized_pdf,
-            {"payload": "cached-docs"},
-            {7: {"MediaBox": "[0 0 100 100]"}},
-        )
-
-        cached = _load_file_task_preprocess_cache(config, converter)
-
-        self.assertIsNone(cached)
-        self.assertFalse(converter.wrote_xml)
-        self.assertFalse((config.working_dir / "file_task_preprocess_cache").exists())
 
 
 class ProcessExitRegressionTests(unittest.TestCase):

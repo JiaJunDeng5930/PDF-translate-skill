@@ -1181,9 +1181,6 @@ class PDFCreater:
             resource_xref_id = re.search("(\\d+) 0 R", r_id).group(1)
             base_op = pdf.xref_stream(int(resource_xref_id))
             translation_config.raise_if_cancelled()
-            xobj_available_fonts = {}
-            xobj_draw_ops = {}
-            xobj_encoding_length_map = {}
             available_font_list = self.get_available_font_list(pdf, page)
 
             page_encoding_length_map = {

@@ -5,7 +5,6 @@ import unicodedata
 from typing import Literal
 
 import regex
-from pymupdf import Font
 
 from babeldoc.format.pdf.document_il import GraphicState
 from babeldoc.format.pdf.document_il import il_version_1
@@ -65,44 +64,6 @@ def is_bullet_point(char: PdfCharacter) -> bool:
     return is_bullet
 
 
-def calculate_box_iou(box1: Box, box2: Box) -> float:
-    """Calculate the Intersection over Union (IOU) between two boxes.
-
-    Args:
-        box1: First box
-        box2: Second box
-
-    Returns:
-        float: IOU value between 0 and 1
-    """
-    if box1 is None or box2 is None:
-        return 0.0
-
-    # Calculate intersection
-    x_left = max(box1.x, box2.x)
-    y_top = max(box1.y, box2.y)
-    x_right = min(box1.x2, box2.x2)
-    y_bottom = min(box1.y2, box2.y2)
-
-    # Check if there's no intersection
-    if x_left >= x_right or y_top >= y_bottom:
-        return 0.0
-
-    # Calculate intersection area
-    intersection_area = (x_right - x_left) * (y_bottom - y_top)
-
-    # Calculate areas of both boxes
-    box1_area = (box1.x2 - box1.x) * (box1.y2 - box1.y)
-    box2_area = (box2.x2 - box2.x) * (box2.y2 - box2.y)
-
-    # Calculate union area
-    union_area = box1_area + box2_area - intersection_area
-
-    # Avoid division by zero
-    if union_area <= 0:
-        return 0.0
-
-    return intersection_area / union_area
 
 
 def formular_height_ignore_char(char: PdfCharacter):
@@ -136,10 +97,6 @@ class Layout:
 
         # 如果当前字符的 y 坐标明显低于前一个字符，说明换行了
         # 这里使用字符高度的一半作为阈值
-        char_height = max(
-            curr_char.box.y2 - curr_char.box.y,
-            prev_char.box.y2 - prev_char.box.y,
-        )
         char_width = max(
             curr_char.box.x2 - curr_char.box.x,
             prev_char.box.x2 - prev_char.box.x,
@@ -156,45 +113,6 @@ class Layout:
         return should_new_line
 
 
-def get_paragraph_length_except(
-    paragraph: PdfParagraph,
-    except_chars: str,
-    font: Font,
-) -> int:
-    length = 0
-    for composition in paragraph.pdf_paragraph_composition:
-        if composition.pdf_character:
-            length += (
-                composition.pdf_character[0].box.x2 - composition.pdf_character[0].box.x
-            )
-        elif composition.pdf_same_style_characters:
-            for pdf_char in composition.pdf_same_style_characters.pdf_character:
-                if pdf_char.char_unicode in except_chars:
-                    continue
-                length += pdf_char.box.x2 - pdf_char.box.x
-        elif composition.pdf_same_style_unicode_characters:
-            for char_unicode in composition.pdf_same_style_unicode_characters.unicode:
-                if char_unicode in except_chars:
-                    continue
-                length += font.char_lengths(
-                    char_unicode,
-                    composition.pdf_same_style_unicode_characters.pdf_style.font_size,
-                )[0]
-        elif composition.pdf_line:
-            for pdf_char in composition.pdf_line.pdf_character:
-                if pdf_char.char_unicode in except_chars:
-                    continue
-                length += pdf_char.box.x2 - pdf_char.box.x
-        elif composition.pdf_formula:
-            length += composition.pdf_formula.box.x2 - composition.pdf_formula.box.x
-        else:
-            logger.error(
-                f"Unknown composition type. "
-                f"Composition: {composition}. "
-                f"Paragraph: {paragraph}. ",
-            )
-            continue
-    return length
 
 
 def get_paragraph_unicode(paragraph: PdfParagraph) -> str:
@@ -293,52 +211,6 @@ def get_char_unicode_string(chars: list[PdfCharacter | str]) -> str:
     return result
 
 
-def get_paragraph_max_height(paragraph: PdfParagraph) -> float:
-    """
-    获取段落中最高的排版单元高度。
-
-    Args:
-        paragraph: PDF 段落对象
-
-    Returns:
-        float: 最大高度值
-    """
-    max_height = 0.0
-    for composition in paragraph.pdf_paragraph_composition:
-        if composition is None:
-            continue
-        if composition.pdf_character:
-            char_height = (
-                composition.pdf_character[0].box.y2 - composition.pdf_character[0].box.y
-            )
-            max_height = max(max_height, char_height)
-        elif composition.pdf_same_style_characters:
-            for pdf_char in composition.pdf_same_style_characters.pdf_character:
-                char_height = pdf_char.box.y2 - pdf_char.box.y
-                max_height = max(max_height, char_height)
-        elif composition.pdf_same_style_unicode_characters:
-            # 对于纯 Unicode 字符，我们使用其样式中的字体大小作为高度估计
-            font_size = (
-                composition.pdf_same_style_unicode_characters.pdf_style.font_size
-            )
-            max_height = max(max_height, font_size)
-        elif composition.pdf_line:
-            for pdf_char in composition.pdf_line.pdf_character:
-                char_height = pdf_char.box.y2 - pdf_char.box.y
-                max_height = max(max_height, char_height)
-        elif composition.pdf_formula:
-            formula_height = (
-                composition.pdf_formula.box.y2 - composition.pdf_formula.box.y
-            )
-            max_height = max(max_height, formula_height)
-        else:
-            logger.error(
-                f"Unknown composition type. "
-                f"Composition: {composition}. "
-                f"Paragraph: {paragraph}. ",
-            )
-            continue
-    return max_height
 
 
 def is_same_style(style1, style2) -> bool:
@@ -586,33 +458,6 @@ def calculate_iou_for_boxes(box1: Box, box2: Box) -> float:
     return intersection_area / first_box_area
 
 
-def calculate_y_iou_for_boxes(box1: Box, box2: Box) -> float:
-    """Calculate the intersection ratio in y-axis direction divided by the first box height.
-
-    Args:
-        box1: First box
-        box2: Second box
-
-    Returns:
-        float: Intersection ratio in y-axis direction between 0 and 1
-    """
-    y_bottom = max(box1.y, box2.y)
-    y_top = min(box1.y2, box2.y2)
-
-    if y_top <= y_bottom:
-        return 0.0
-
-    # Calculate intersection height
-    intersection_height = y_top - y_bottom
-
-    # Calculate height of first box
-    first_box_height = box1.y2 - box1.y
-
-    # Return intersection divided by first box height, handle division by zero
-    if first_box_height <= 0:
-        return 0.0
-
-    return intersection_height / first_box_height
 
 
 def calculate_y_true_iou_for_boxes(box1: Box, box2: Box) -> float:

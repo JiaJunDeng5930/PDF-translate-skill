@@ -15,6 +15,7 @@ watermark_output_mode: "watermarked"
 auto_extract_glossary: true
 primary_font_family: null
 add_formula_placehold_hint: true
+table_model: null
 ```
 
 Fields:
@@ -31,6 +32,7 @@ Fields:
 - `auto_extract_glossary`: enables the LLM glossary pre-pass.
 - `primary_font_family`: `null`, `serif`, `sans-serif`, or `script`.
 - `add_formula_placehold_hint`: asks the pipeline to include formula placeholder hints in translation prompts.
+- `table_model`: `null` or `rapidocr`. `rapidocr` enables the table parsing stage with the packaged compatibility model.
 
 ## State Rule
 

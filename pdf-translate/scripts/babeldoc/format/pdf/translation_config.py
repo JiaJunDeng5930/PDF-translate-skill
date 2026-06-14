@@ -323,12 +323,7 @@ class TranslationConfig:
         self._part_working_dirs: dict[int, Path] = {}
         self._part_output_dirs: dict[int, Path] = {}
 
-        if table_model is not None:
-            logger.warning(
-                "TranslationConfig.table_model is deprecated and ignored; "
-                "RapidOCR table-text detection has been retired."
-            )
-        self.table_model = None
+        self.table_model = table_model
         self.show_char_box = show_char_box
         self.custom_system_prompt = custom_system_prompt
         self.add_formula_placehold_hint = add_formula_placehold_hint

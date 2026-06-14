@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import json
 import re
-from pathlib import Path
 
 from babeldoc.file_task_bridge import FileTaskPending
 from babeldoc.translator.translator import BaseTranslator

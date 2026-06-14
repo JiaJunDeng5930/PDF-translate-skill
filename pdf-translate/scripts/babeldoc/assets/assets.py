@@ -14,7 +14,6 @@ import json
 import logging
 import os
 import threading
-import zipfile
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -328,25 +327,6 @@ async def get_fastest_upstream_for_model(client: httpx.AsyncClient | None = None
     return await get_fastest_upstream_for_font(client, exclude_upstream=["github"])
 
 
-async def get_fastest_upstream(client: httpx.AsyncClient | None = None):
-    (
-        fastest_upstream_for_font,
-        online_font_metadata,
-    ) = await get_fastest_upstream_for_font(client)
-    if fastest_upstream_for_font is None:
-        logger.error("Failed to get fastest upstream")
-        exit(1)
-
-    if fastest_upstream_for_font == "github":
-        # since github is only store font, we need to get the fastest upstream for model
-        fastest_upstream_for_model, _ = await get_fastest_upstream_for_model(client)
-        if fastest_upstream_for_model is None:
-            logger.error("Failed to get fastest upstream")
-            exit(1)
-    else:
-        fastest_upstream_for_model = fastest_upstream_for_font
-
-    return online_font_metadata, fastest_upstream_for_font, fastest_upstream_for_model
 
 
 async def get_doclayout_onnx_model_path_async(client: httpx.AsyncClient | None = None):
@@ -517,8 +497,6 @@ async def get_cmap_data_async(
     return json.loads(path.read_text())
 
 
-def get_cmap_file_path(name: str):
-    return run_coro(get_cmap_file_path_async(name))
 
 
 def get_cmap_data(name: str):
@@ -583,21 +561,8 @@ async def download_all_cmaps_async(client: httpx.AsyncClient | None = None):
     await asyncio.gather(*cmap_tasks)
 
 
-async def async_warmup():
-    logger.info("Downloading all assets...")
-    from tiktoken import encoding_for_model
-
-    _ = encoding_for_model("gpt-4o")
-    httpx_module = _load_httpx()
-    async with httpx_module.AsyncClient() as client:
-        onnx_task = asyncio.create_task(get_doclayout_onnx_model_path_async(client))
-        font_tasks = asyncio.create_task(download_all_fonts_async(client))
-        cmap_tasks = asyncio.create_task(download_all_cmaps_async(client))
-        await asyncio.gather(onnx_task, font_tasks, cmap_tasks)
 
 
-def warmup():
-    run_coro(async_warmup())
 
 
 def generate_all_assets_file_list():
@@ -750,105 +715,14 @@ def download_runtime_assets(output_directory: Path) -> Path:
     return run_coro(download_runtime_assets_async(output_directory))
 
 
-async def generate_offline_assets_package_async(output_directory: Path | None = None):
-    await async_warmup()
-    logger.info("Generating offline assets package...")
-    file_list = generate_all_assets_file_list()
-    offline_assets_tag = get_offline_assets_tag(file_list)
-    if output_directory is None:
-        output_path = get_cache_file_path(
-            f"offline_assets_{offline_assets_tag}.zip", "assets"
-        )
-    else:
-        output_directory.mkdir(parents=True, exist_ok=True)
-        output_path = output_directory / f"offline_assets_{offline_assets_tag}.zip"
-    with zipfile.ZipFile(
-        output_path, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9
-    ) as zipf:
-        for file_type, file_descs in file_list.items():
-            # zipf.mkdir(file_type)
-            for file_desc in file_descs:
-                file_name = file_desc["name"]
-                sha3_256 = file_desc["sha3_256"]
-                file_path = get_cache_file_path(file_name, file_type)
-                if not verify_file(file_path, sha3_256):
-                    logger.error(f"File {file_path} is corrupted")
-                    exit(1)
-
-                with file_path.open("rb") as f:
-                    zipf.writestr(f"{file_type}/{file_name}", f.read())
-    logger.info(f"Offline assets package generated at {output_path}")
 
 
-async def restore_offline_assets_package_async(input_path: Path | None = None):
-    file_list = generate_all_assets_file_list()
-    offline_assets_tag = get_offline_assets_tag(file_list)
-    if input_path is None:
-        input_path = get_cache_file_path(
-            f"offline_assets_{offline_assets_tag}.zip", "assets"
-        )
-    else:
-        if input_path.exists() and input_path.is_dir():
-            input_path = input_path / f"offline_assets_{offline_assets_tag}.zip"
-        if not input_path.exists():
-            logger.critical(f"Offline assets package not found: {input_path}")
-            exit(1)
-
-        import re
-
-        offline_assets_tag_from_input_path = re.match(
-            r"offline_assets_(.*)\.zip", input_path.name
-        ).group(1)
-        if offline_assets_tag != offline_assets_tag_from_input_path:
-            logger.critical(
-                f"Offline assets tag mismatch: {offline_assets_tag} != {offline_assets_tag_from_input_path}"
-            )
-            exit(1)
-    nothing_changed = True
-    with zipfile.ZipFile(input_path, "r") as zipf:
-        for file_type, file_descs in file_list.items():
-            for file_desc in file_descs:
-                file_name = file_desc["name"]
-                file_path = get_cache_file_path(file_name, file_type)
-
-                if verify_file(file_path, file_desc["sha3_256"]):
-                    continue
-                nothing_changed = False
-                with zipf.open(f"{file_type}/{file_name}", "r") as f:
-                    with file_path.open("wb") as f2:
-                        f2.write(f.read())
-                if not verify_file(file_path, file_desc["sha3_256"]):
-                    logger.critical(
-                        "Offline assets package is corrupted, please delete it and try again"
-                    )
-                    exit(1)
-    if not nothing_changed:
-        logger.info(f"Offline assets package restored from {input_path}")
 
 
-def get_offline_assets_tag(file_list: dict | None = None):
-    if file_list is None:
-        file_list = generate_all_assets_file_list()
-    import orjson
-
-    # noinspection PyTypeChecker
-    offline_assets_tag = hashlib.sha3_256(
-        orjson.dumps(
-            file_list,
-            option=orjson.OPT_APPEND_NEWLINE
-            | orjson.OPT_INDENT_2
-            | orjson.OPT_SORT_KEYS,
-        )
-    ).hexdigest()
-    return offline_assets_tag
 
 
-def generate_offline_assets_package(output_directory: Path | None = None):
-    return run_coro(generate_offline_assets_package_async(output_directory))
 
 
-def restore_offline_assets_package(input_path: Path | None = None):
-    return run_coro(restore_offline_assets_package_async(input_path))
 
 
 if __name__ == "__main__":
@@ -857,6 +731,3 @@ if __name__ == "__main__":
     logging.basicConfig(level=logging.DEBUG, handlers=[RichHandler()])
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("httpcore").setLevel(logging.WARNING)
-    # warmup()
-    # generate_offline_assets_package()
-    # warmup()

@@ -27,8 +27,6 @@ import pymupdf
 import babeldoc.format.pdf.document_il.il_version_1
 from babeldoc.assets.assets import get_doclayout_onnx_model_path
 
-# from huggingface_hub import hf_hub_download
-
 logger = logging.getLogger(__name__)
 
 
@@ -204,8 +202,6 @@ class OnnxModel(DocLayoutModel):
             batch_images = image[i : i + batch_size]
             batch_size_actual = len(batch_images)
 
-            # Calculate target size based on the maximum height in the batch
-            max_height = max(img.shape[0] for img in batch_images)
             target_imgsz = 1024
 
             # Preprocess batch
