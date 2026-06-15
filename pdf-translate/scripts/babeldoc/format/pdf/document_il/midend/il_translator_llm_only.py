@@ -44,7 +44,7 @@ from babeldoc.file_task_bridge import FileTaskPending
 from babeldoc.file_task_bridge import is_file_task_workflow
 from babeldoc.translator.translator import BaseTranslator
 from babeldoc.utils.priority_thread_pool_executor import PriorityThreadPoolExecutor
-from file_task_pdf_translate.text_hygiene import is_figure_label_candidate
+from file_task_pdf_translate.text_hygiene import classify_text_role
 from file_task_pdf_translate.text_hygiene import paragraph_hygiene_context
 
 logger = logging.getLogger(__name__)
@@ -725,7 +725,8 @@ class ILTranslatorLLMOnly:
                 ti: il_translator.ILTranslator.TranslateInput = input_text[1]
                 tracker: ParagraphTranslateTracker = input_text[3]
                 paragraph = input_text[2]
-                hygiene_context = paragraph_hygiene_context(paragraph)
+                page = batch_paragraph.pages[id_]
+                hygiene_context = paragraph_hygiene_context(paragraph, page)
                 tracker.record_multi_paragraph_index(id_)
                 placeholders_hint = ti.get_placeholders_hint()
                 obj = {
@@ -734,14 +735,14 @@ class ILTranslatorLLMOnly:
                     "layout_label": paragraph.layout_label,
                     "hygiene_context": hygiene_context,
                 }
-                if is_file_task_workflow(
-                    self.translation_config
-                ) and is_figure_label_candidate(
-                    input_text[0],
-                    paragraph.layout_label,
-                    hygiene_context,
-                ):
-                    obj["text_role"] = "figure_label"
+                if is_file_task_workflow(self.translation_config):
+                    text_role = classify_text_role(
+                        input_text[0],
+                        paragraph.layout_label,
+                        hygiene_context,
+                    )
+                    if text_role:
+                        obj["text_role"] = text_role
                 if (
                     placeholders_hint
                     and self.translation_config.add_formula_placehold_hint

@@ -33,7 +33,7 @@ from babeldoc.file_task_bridge import FileTaskPending
 from babeldoc.file_task_bridge import is_file_task_workflow
 from babeldoc.utils.priority_thread_pool_executor import PriorityThreadPoolExecutor
 from file_task_pdf_translate.text_hygiene import HygieneBlock
-from file_task_pdf_translate.text_hygiene import is_figure_label_candidate
+from file_task_pdf_translate.text_hygiene import classify_text_role
 from file_task_pdf_translate.text_hygiene import normalize_text_blocks
 from file_task_pdf_translate.text_hygiene import paragraph_hygiene_context
 
@@ -264,11 +264,11 @@ class AutomaticTermExtractor:
             context = paragraph_hygiene_context(paragraph, page)
             if is_file_task_workflow(
                 self.translation_config
-            ) and is_figure_label_candidate(
+            ) and classify_text_role(
                 paragraph.unicode,
                 getattr(paragraph, "layout_label", None),
                 context,
-            ):
+            ) == "figure_label":
                 pbar.advance(1)
                 continue
             # if len(paragraph.unicode) < self.translation_config.min_text_length:

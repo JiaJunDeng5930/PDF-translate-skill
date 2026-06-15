@@ -92,6 +92,9 @@ def advance(workspace: Path | None = None) -> dict:
         if state.get("status") == "done":
             return _done_response(paths, state, validation.warnings)
 
+        if state.get("status") == "shard_ready":
+            return _finalize_shard_ready(paths, state, validation.warnings)
+
         if _page_plan_complete(state):
             state["status"] = "done"
             state["pending_task_hash"] = None
@@ -165,78 +168,98 @@ def advance(workspace: Path | None = None) -> dict:
             result,
             state["config"],
         )
-        output_pdfs, output_pdf = _merge_page_output_pdfs(
+        state["status"] = "shard_ready"
+        state["pending_task_hash"] = None
+        state["shard_ready"] = {
+            "page": _active_page(state),
+            "output_pdfs": shard_output_pdfs,
+        }
+        write_json(paths.state, state)
+        append_trace(
             paths,
-            state,
-            shard_output_pdfs,
+            "shard_ready",
+            page=_active_page(state),
+            output_pdfs=shard_output_pdfs,
         )
-        output_errors = _validate_output_pdfs(output_pdfs)
-        if output_errors:
-            state["status"] = "error"
-            state["last_error"] = "; ".join(output_errors)
-            state["pending_task_hash"] = None
-            state["output_pdfs"] = output_pdfs
-            write_json(paths.state, state)
-            append_trace(paths, "output_validation_error", errors=output_errors)
-            return {
-                "status": "error",
-                "editable_file": None,
-                "instruction": "Fix the output validation errors reported in validation_errors.",
-                "progress": _progress(paths, state),
-                "validation_errors": output_errors,
-                "validation_warnings": validation.warnings,
-                "trace_tail": trace_tail(paths),
-                "output_pdf": output_pdf,
-                "output_pdfs": output_pdfs,
-            }
+        return _finalize_shard_ready(paths, state, validation.warnings)
 
-        completed_page, next_page = mark_active_page_completed(state)
+
+def _finalize_shard_ready(paths, state: dict, warnings: list[str]) -> dict:
+    shard_ready = state.get("shard_ready") or {}
+    shard_output_pdfs = dict(shard_ready.get("output_pdfs") or {})
+    output_pdfs, output_pdf = _merge_page_output_pdfs(
+        paths,
+        state,
+        shard_output_pdfs,
+    )
+    output_errors = _validate_output_pdfs(output_pdfs)
+    if output_errors:
+        state["status"] = "error"
+        state["last_error"] = "; ".join(output_errors)
         state["pending_task_hash"] = None
         state["output_pdfs"] = output_pdfs
-        state.pop("last_error", None)
-        if next_page is None:
-            state["status"] = "done"
-            write_json(paths.state, state)
-            _write_progress_snapshot(
-                paths,
-                _annotate_progress_with_page_plan(
-                    _terminal_pipeline_progress(),
-                    state,
-                ),
-            )
-            append_trace(
-                paths,
-                "pdf_written",
-                output_pdf=output_pdf,
-                output_pdfs=output_pdfs,
-            )
-            return _done_response(paths, state, validation.warnings)
+        write_json(paths.state, state)
+        append_trace(paths, "output_validation_error", errors=output_errors)
+        return {
+            "status": "error",
+            "editable_file": None,
+            "instruction": "Fix the output validation errors reported in validation_errors.",
+            "progress": _progress(paths, state),
+            "validation_errors": output_errors,
+            "validation_warnings": warnings,
+            "trace_tail": trace_tail(paths),
+            "output_pdf": output_pdf,
+            "output_pdfs": output_pdfs,
+        }
 
-        state["status"] = "page_completed"
-        state["last_completed_page"] = completed_page
-        state["next_page"] = next_page
+    completed_page, next_page = mark_active_page_completed(state)
+    state["pending_task_hash"] = None
+    state["output_pdfs"] = output_pdfs
+    state.pop("shard_ready", None)
+    state.pop("last_error", None)
+    if next_page is None:
+        state["status"] = "done"
         write_json(paths.state, state)
         _write_progress_snapshot(
             paths,
             _annotate_progress_with_page_plan(
-                _page_completed_pipeline_progress(completed_page),
+                _terminal_pipeline_progress(),
                 state,
             ),
         )
         append_trace(
             paths,
-            "page_completed",
-            page=completed_page,
-            next_page=next_page,
+            "pdf_written",
+            output_pdf=output_pdf,
             output_pdfs=output_pdfs,
         )
-        return _page_completed_response(
-            paths,
+        return _done_response(paths, state, warnings)
+
+    state["status"] = "page_completed"
+    state["last_completed_page"] = completed_page
+    state["next_page"] = next_page
+    write_json(paths.state, state)
+    _write_progress_snapshot(
+        paths,
+        _annotate_progress_with_page_plan(
+            _page_completed_pipeline_progress(completed_page),
             state,
-            completed_page,
-            next_page,
-            validation.warnings,
-        )
+        ),
+    )
+    append_trace(
+        paths,
+        "page_completed",
+        page=completed_page,
+        next_page=next_page,
+        output_pdfs=output_pdfs,
+    )
+    return _page_completed_response(
+        paths,
+        state,
+        completed_page,
+        next_page,
+        warnings,
+    )
 
 
 def _build_translation_config(
@@ -320,11 +343,15 @@ def _pending_response(
     status = validation.status
     if status == "accepted":
         status = state.get("status", "needs_ai_edit")
+    progress = _progress(paths, state)
+    pipeline_progress = progress.get("pipeline_progress")
+    if pipeline_progress:
+        _write_progress_snapshot(paths, pipeline_progress)
     return {
         "status": status if status != "no_pending" else state.get("status"),
         "editable_file": str(paths.current_translation),
         "instruction": _instruction_for_pending(pending, validation, state),
-        "progress": _progress(paths, state),
+        "progress": progress,
         "validation_errors": validation.errors,
         "validation_warnings": validation.warnings,
         "trace_tail": trace_tail(paths),
@@ -401,6 +428,7 @@ def _instruction_for_pending(
 def _progress(paths, state: dict) -> dict:
     config = state.get("config") or {}
     pending = load_pending_task(paths, state) or {}
+    accepted_tasks = accepted_answer_count(paths)
     pipeline_progress = read_json(paths.progress, None)
     if state.get("status") == "done":
         pipeline_progress = _terminal_pipeline_progress()
@@ -413,10 +441,19 @@ def _progress(paths, state: dict) -> dict:
         pipeline_progress = _annotate_progress_with_page_plan(
             pipeline_progress,
             state,
+            accepted_tasks=accepted_tasks,
+            has_pending=bool(pending),
+        )
+    elif pipeline_progress:
+        pipeline_progress = _annotate_progress_with_page_plan(
+            pipeline_progress,
+            state,
+            accepted_tasks=accepted_tasks,
+            has_pending=bool(pending),
         )
     return {
         "advance_count": state.get("advance_count", 0),
-        "accepted_tasks": accepted_answer_count(paths),
+        "accepted_tasks": accepted_tasks,
         "pending_task_type": pending.get("task_type"),
         "pending_blocks": len(pending.get("blocks", [])),
         "pending_page": pending.get("page") or state.get("pending_page"),
@@ -528,23 +565,39 @@ def _public_page_plan(state: dict) -> dict | None:
     }
 
 
-def _annotate_progress_with_page_plan(progress: dict, state: dict) -> dict:
+def _annotate_progress_with_page_plan(
+    progress: dict,
+    state: dict,
+    accepted_tasks: int | None = None,
+    has_pending: bool | None = None,
+) -> dict:
     annotated = dict(progress)
     annotated["page_plan"] = _public_page_plan(state)
-    page_progress = _page_progress(state, annotated)
+    page_progress = _page_progress(
+        state,
+        annotated,
+        accepted_tasks=accepted_tasks,
+        has_pending=has_pending,
+    )
     annotated["page_progress"] = page_progress
     if page_progress:
         annotated["shard_stage_current"] = progress.get("stage_current")
         annotated["shard_stage_total"] = progress.get("stage_total")
         annotated["shard_stage_progress"] = progress.get("stage_progress")
-        annotated["stage_current"] = page_progress["completed_count"]
-        annotated["stage_total"] = page_progress["target_total"]
-        annotated["stage_progress"] = page_progress["overall_progress"]
+        annotated["stage_overall_progress"] = progress.get("overall_progress")
+        annotated["workflow_current"] = page_progress.get("workflow_current")
+        annotated["workflow_total"] = page_progress.get("workflow_total")
+        annotated["workflow_progress"] = page_progress["overall_progress"]
         annotated["overall_progress"] = page_progress["overall_progress"]
     return annotated
 
 
-def _page_progress(state: dict, pipeline_progress: dict | None) -> dict | None:
+def _page_progress(
+    state: dict,
+    pipeline_progress: dict | None,
+    accepted_tasks: int | None = None,
+    has_pending: bool | None = None,
+) -> dict | None:
     page_plan = state.get("page_plan")
     if not isinstance(page_plan, dict):
         return None
@@ -559,8 +612,17 @@ def _page_progress(state: dict, pipeline_progress: dict | None) -> dict | None:
         active_fraction = 0.0
         completed_count = len(target_pages)
         active_page = None
+        workflow_current = len(target_pages)
+        workflow_total = len(target_pages)
     elif state.get("status") == "page_completed":
         active_fraction = 0.0
+        workflow_current = completed_count
+        workflow_total = len(target_pages)
+    elif state.get("status") in {"needs_ai_edit", "needs_ai_fix"} and has_pending:
+        accepted = max(0, int(accepted_tasks or 0))
+        active_fraction = accepted / (accepted + 1)
+        workflow_current = accepted
+        workflow_total = accepted + 1
     else:
         stage_progress = 0.0
         if pipeline_progress:
@@ -568,6 +630,8 @@ def _page_progress(state: dict, pipeline_progress: dict | None) -> dict | None:
             if isinstance(raw_stage_progress, (int, float)):
                 stage_progress = max(0.0, min(100.0, float(raw_stage_progress)))
         active_fraction = stage_progress / 100.0 if active_page is not None else 0.0
+        workflow_current = None
+        workflow_total = None
 
     overall = ((completed_count + active_fraction) / len(target_pages)) * 100.0
     return {
@@ -576,7 +640,10 @@ def _page_progress(state: dict, pipeline_progress: dict | None) -> dict | None:
         "active_page": active_page,
         "completed_pages": completed_pages,
         "active_page_stage": (pipeline_progress or {}).get("stage"),
-        "active_page_progress": (pipeline_progress or {}).get("stage_progress"),
+        "active_page_stage_progress": (pipeline_progress or {}).get("stage_progress"),
+        "active_page_progress": round(active_fraction * 100.0, 2),
+        "workflow_current": workflow_current,
+        "workflow_total": workflow_total,
         "overall_progress": round(overall, 2),
     }
 

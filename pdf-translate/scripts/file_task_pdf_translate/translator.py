@@ -106,6 +106,7 @@ class FileTaskTranslator(BaseTranslator):
                     "hygiene_context": context,
                 }
             )
+        _repair_translation_block_boundaries(blocks)
 
         hash_blocks = [_hashable_block(block) for block in blocks]
         hash_payload = {
@@ -164,3 +165,19 @@ def _hashable_block(block: dict) -> dict:
         for key, value in block.items()
         if key != "hygiene_context"
     }
+
+
+def _repair_translation_block_boundaries(blocks: list[dict]) -> None:
+    for index in range(len(blocks) - 1):
+        current = blocks[index]
+        following = blocks[index + 1]
+        left = current.get("source") or ""
+        right = following.get("source") or ""
+        match = re.match(r"^([a-z]{2,})(\s+|$)", right)
+        if not match or not re.search(r"[A-Za-z]{2,}-$", left.rstrip()):
+            continue
+        word = match.group(1)
+        current["source"] = re.sub(r"-\s*$", "", left.rstrip()) + word
+        following["source"] = right[match.end() :].lstrip()
+        current["required_placeholders"] = placeholder_sequence(current["source"])
+        following["required_placeholders"] = placeholder_sequence(following["source"])

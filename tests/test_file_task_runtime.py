@@ -555,6 +555,75 @@ add_formula_placehold_hint: true
         self.assertIn("translated page one", page_texts[0])
         self.assertIn("source page two", page_texts[1])
 
+    def test_advance_finalizes_ready_shard_without_rerunning_translation(self) -> None:
+        import pymupdf
+
+        from file_task_pdf_translate.config import load_workspace_config
+        from file_task_pdf_translate.runner import advance
+        from file_task_pdf_translate.state import default_state
+        from file_task_pdf_translate.state import ensure_dirs
+        from file_task_pdf_translate.state import paths_for
+        from file_task_pdf_translate.state import read_json
+        from file_task_pdf_translate.state import write_json
+
+        workspace = self.tmp
+        write_test_pdf(workspace / "paper.pdf", ["source page one", "source page two"])
+        (workspace / "assets").mkdir()
+        (workspace / "pdf_translate.yaml").write_text(
+            """
+input_pdf: paper.pdf
+lang_in: en
+lang_out: zh-CN
+asset_dir: assets
+pages: "1-2"
+output_mode: mono
+watermark_output_mode: no_watermark
+auto_extract_glossary: false
+primary_font_family: null
+add_formula_placehold_hint: true
+""".lstrip(),
+            encoding="utf-8",
+        )
+        shard_pdf = workspace / "translated.pdf"
+        write_test_pdf(shard_pdf, ["translated page one", "unused page two"])
+        paths = paths_for(workspace)
+        ensure_dirs(paths)
+        state = default_state(load_workspace_config(workspace).snapshot)
+        state["status"] = "shard_ready"
+        state["page_plan"] = {
+            "source_page_count": 2,
+            "target_pages": [1, 2],
+            "active_page": 1,
+            "completed_pages": [],
+        }
+        state["shard_ready"] = {
+            "page": 1,
+            "output_pdfs": {"no_watermark_mono": str(shard_pdf)},
+        }
+        write_json(paths.state, state)
+
+        with patch(
+            "file_task_pdf_translate.runner.set_runtime_asset_dir",
+            return_value=workspace / "assets",
+        ), patch(
+            "file_task_pdf_translate.runner.translate",
+            side_effect=AssertionError("translate reran"),
+        ):
+            result = advance(workspace)
+
+        state = read_json(paths.state, {})
+        merged = pymupdf.open(result["output_pdf"])
+        try:
+            page_texts = [page.get_text("text") for page in merged]
+        finally:
+            merged.close()
+
+        self.assertEqual(result["status"], "page_completed")
+        self.assertNotIn("shard_ready", state)
+        self.assertEqual(state["page_plan"]["completed_pages"], [1])
+        self.assertIn("translated page one", page_texts[0])
+        self.assertIn("source page two", page_texts[1])
+
     def test_progress_snapshot_reports_business_page_cursor(self) -> None:
         from file_task_pdf_translate.runner import _record_pipeline_progress
         from file_task_pdf_translate.state import ensure_dirs
@@ -595,8 +664,9 @@ add_formula_placehold_hint: true
         self.assertEqual(progress["page_plan"]["active_page"], 2)
         self.assertEqual(progress["page_progress"]["completed_count"], 1)
         self.assertEqual(progress["page_progress"]["overall_progress"], 50.0)
-        self.assertEqual(progress["stage_total"], 3)
+        self.assertEqual(progress["stage_total"], 1)
         self.assertEqual(progress["shard_stage_total"], 1)
+        self.assertEqual(progress["workflow_progress"], 50.0)
 
     def test_progress_response_does_not_reannotate_page_snapshot(self) -> None:
         from file_task_pdf_translate.runner import _progress
@@ -640,6 +710,8 @@ add_formula_placehold_hint: true
             50.0,
         )
         self.assertEqual(progress["pipeline_progress"]["shard_stage_total"], 2)
+        self.assertEqual(progress["pipeline_progress"]["stage_total"], 2)
+        self.assertEqual(progress["pipeline_progress"]["workflow_progress"], 50.0)
 
     def test_single_target_page_progress_reports_one_page_total(self) -> None:
         from file_task_pdf_translate.runner import _record_pipeline_progress
@@ -678,9 +750,58 @@ add_formula_placehold_hint: true
         )
 
         progress = read_json(paths.progress, None)
-        self.assertEqual(progress["stage_total"], 1)
+        self.assertEqual(progress["stage_total"], 33)
         self.assertEqual(progress["shard_stage_total"], 33)
         self.assertEqual(progress["page_progress"]["target_total"], 1)
+        self.assertEqual(progress["workflow_progress"], 39.0)
+
+    def test_pending_progress_uses_accepted_over_current_task(self) -> None:
+        from file_task_pdf_translate.runner import _progress
+        from file_task_pdf_translate.runner import _record_pipeline_progress
+        from file_task_pdf_translate.state import answer_path
+        from file_task_pdf_translate.state import ensure_dirs
+        from file_task_pdf_translate.state import paths_for
+        from file_task_pdf_translate.state import pending_snapshot_path
+        from file_task_pdf_translate.state import write_json
+
+        paths = paths_for(self.tmp)
+        ensure_dirs(paths)
+        state = {
+            "status": "needs_ai_edit",
+            "pending_task_hash": "pending",
+            "page_plan": {
+                "source_page_count": 33,
+                "target_pages": [1],
+                "active_page": 1,
+                "completed_pages": [],
+            },
+        }
+        write_json(paths.state, state)
+        write_json(
+            pending_snapshot_path(paths, "pending"),
+            {"task_type": "term_extract", "blocks": [{"source": "x"}], "page": 1},
+        )
+        write_json(answer_path(paths, "accepted"), {"terms": []})
+        _record_pipeline_progress(
+            paths,
+            {
+                "type": "progress_paused",
+                "stage": "Automatic Term Extraction",
+                "stage_progress": 100.0,
+                "stage_current": 33,
+                "stage_total": 33,
+                "overall_progress": 100.0,
+                "part_index": 1,
+                "total_parts": 1,
+            },
+        )
+
+        progress = _progress(paths, state)
+
+        self.assertEqual(progress["pipeline_progress"]["stage_progress"], 100.0)
+        self.assertEqual(progress["pipeline_progress"]["workflow_progress"], 50.0)
+        self.assertEqual(progress["page_progress"]["workflow_current"], 1)
+        self.assertEqual(progress["page_progress"]["workflow_total"], 2)
 
 
 class EditableParserRegressionTests(unittest.TestCase):
@@ -835,6 +956,59 @@ items:
         self.assertIn("University 3 Shenzhen University", normalized)
         self.assertIn("University 4 Peking University", normalized)
 
+    def test_geometry_context_restores_author_word_boundaries(self) -> None:
+        from file_task_pdf_translate.editable import normalize_extracted_pdf_text
+
+        chars = []
+        x = 0.0
+        previous = ""
+        for char in "Lu1 , MinzheGuo Universityof":
+            width = 3.0 if char == " " else 5.0
+            if (previous, char) in {("e", "G"), ("y", "o")}:
+                x += 3.0
+            chars.append({"text": char, "bbox": [x, 0.0, x + width, 8.0]})
+            x += width
+            previous = char
+
+        normalized = normalize_extracted_pdf_text(
+            "Lu1 , MinzheGuo Universityof",
+            {
+                "layout_label": "author",
+                "chars": chars,
+            },
+        )
+
+        self.assertIn("Lu 1, Minzhe", normalized)
+        self.assertIn("Minzhe Guo", normalized)
+        self.assertIn("University of", normalized)
+
+    def test_geometry_context_repairs_line_break_hyphenation(self) -> None:
+        from file_task_pdf_translate.editable import normalize_extracted_pdf_text
+
+        def chars_for(text: str) -> list[dict]:
+            chars = []
+            x = 0.0
+            y = 0.0
+            for char in text:
+                if char == "\n":
+                    x = 0.0
+                    y += 12.0
+                    continue
+                chars.append({"text": char, "bbox": [x, y, x + 5.0, y + 8.0]})
+                x += 5.0
+            return chars
+
+        normalized = normalize_extracted_pdf_text(
+            "re-\nsulting text-\nguided text-to-\nimage",
+            {
+                "chars": chars_for("re-\nsulting text-\nguided text-to-\nimage"),
+            },
+        )
+
+        self.assertIn("resulting", normalized)
+        self.assertIn("text-guided", normalized)
+        self.assertIn("text-to-image", normalized)
+
     def test_placeholder_author_boundaries_are_spaced_before_editable_tasks(self) -> None:
         from file_task_pdf_translate.editable import normalize_extracted_pdf_text
 
@@ -855,10 +1029,34 @@ items:
         self.assertIn("University <b9>Shenzhen", normalized)
 
     def test_short_figure_labels_are_detected_for_term_split(self) -> None:
+        from file_task_pdf_translate.text_hygiene import classify_text_role
         from file_task_pdf_translate.text_hygiene import is_figure_label_candidate
 
         self.assertTrue(is_figure_label_candidate("snow", "plain text"))
-        self.assertTrue(is_figure_label_candidate("Edited image", "caption"))
+        self.assertTrue(is_figure_label_candidate("Edited image", "figure"))
+        self.assertEqual(classify_text_role("Edited image", "caption"), "caption")
+        self.assertTrue(
+            is_figure_label_candidate(
+                "snow",
+                "fallback_line",
+                {
+                    "bbox": [170.0, 470.0, 191.0, 476.0],
+                    "page_layouts": [
+                        {
+                            "class_name": "figure",
+                            "bbox": [56.0, 281.0, 555.0, 648.0],
+                        }
+                    ],
+                },
+            )
+        )
+        self.assertEqual(
+            classify_text_role(
+                "Figure 1. ChordEdit mitigates failures.",
+                "figure_caption",
+            ),
+            "caption",
+        )
         self.assertFalse(is_figure_label_candidate("ChordEdit"))
         self.assertFalse(
             is_figure_label_candidate(
@@ -915,6 +1113,7 @@ items:
     def test_short_figure_labels_skip_term_extraction(self) -> None:
         from babeldoc.format.pdf.document_il.il_version_1 import Box
         from babeldoc.format.pdf.document_il.il_version_1 import Page
+        from babeldoc.format.pdf.document_il.il_version_1 import PageLayout
         from babeldoc.format.pdf.document_il.il_version_1 import PdfCharacter
         from babeldoc.format.pdf.document_il.il_version_1 import PdfLine
         from babeldoc.format.pdf.document_il.il_version_1 import PdfParagraph
@@ -949,10 +1148,20 @@ items:
             xobj_id=1,
             unicode="snow",
             debug_id="label-1",
-            layout_label="plain text",
+            layout_label="fallback_line",
             layout_id=3,
         )
-        page = Page(pdf_paragraph=[paragraph])
+        page = Page(
+            page_layout=[
+                PageLayout(
+                    box=Box(0, -10, 80, 40),
+                    id=1,
+                    conf=1,
+                    class_name="figure",
+                )
+            ],
+            pdf_paragraph=[paragraph],
+        )
         executor = SimpleNamespace(submit=Mock())
         pbar = SimpleNamespace(advance=Mock())
         extractor = object.__new__(AutomaticTermExtractor)
@@ -1210,6 +1419,33 @@ class EditableYamlWorkflowTests(unittest.TestCase):
         )
 
         self.assertEqual(first["task_hash"], second["task_hash"])
+
+    def test_translation_task_repairs_hyphenated_item_boundary(self) -> None:
+        from file_task_pdf_translate.state import ensure_dirs
+        from file_task_pdf_translate.state import paths_for
+        from file_task_pdf_translate.translator import FileTaskTranslator
+
+        paths = paths_for(self.tmp)
+        ensure_dirs(paths)
+        state = {
+            "config": {
+                "lang_in": "en",
+                "lang_out": "zh-CN",
+            },
+            "pending_task_hash": None,
+            "status": "running",
+        }
+        translator = FileTaskTranslator(paths, state)
+
+        task = translator._translation_task_from_items(
+            [
+                {"id": 0, "input": "method that fa-"},
+                {"id": 1, "input": "cilitates high-fidelity editing."},
+            ]
+        )
+
+        self.assertEqual(task["blocks"][0]["source"], "method that facilitates")
+        self.assertEqual(task["blocks"][1]["source"], "high-fidelity editing.")
 
     def test_translation_validation_reports_placeholder_sequence_diff(self) -> None:
         from file_task_pdf_translate.editable import EditableBlock
