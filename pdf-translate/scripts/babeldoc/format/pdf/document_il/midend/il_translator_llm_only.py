@@ -5,6 +5,8 @@
 # Derived from BabelDOC commit 980fd2821d54cbabd270349fe509e8177c35e4c3.
 # Modified on 2026-06-09 to run LLM translation batches through the
 # file-backed pdf-translate skill task workflow.
+# Modified on 2026-06-15 to carry text roles and geometry hygiene context
+# through file-backed translation batches.
 
 import json
 import logging
