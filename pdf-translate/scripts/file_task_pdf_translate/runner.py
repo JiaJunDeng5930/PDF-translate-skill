@@ -18,6 +18,7 @@ from babeldoc.const import close_process_pool
 from babeldoc.file_task_bridge import FileTaskPending
 from babeldoc.format.pdf.high_level import translate
 from babeldoc.format.pdf.translation_config import TranslationConfig
+from babeldoc.utils import memory
 
 from .config import ConfigError
 from .config import load_workspace_config
@@ -91,132 +92,151 @@ def advance(workspace: Path | None = None) -> dict:
         if state.get("status") == "done":
             return _done_response(paths, state, validation.warnings)
 
-        while True:
-            if _page_plan_complete(state):
-                state["status"] = "done"
-                state["pending_task_hash"] = None
-                state.pop("last_error", None)
-                write_json(paths.state, state)
-                _write_progress_snapshot(
-                    paths,
-                    _annotate_progress_with_page_plan(
-                        _terminal_pipeline_progress(),
-                        state,
-                    ),
-                )
-                append_trace(
-                    paths,
-                    "pdf_written",
-                    output_pdf=_primary_output_pdf(state),
-                    output_pdfs=state.get("output_pdfs", {}),
-                )
-                return _done_response(paths, state, validation.warnings)
-
-            translator = FileTaskTranslator(paths, state)
-            config = _build_translation_config(paths, state, translator)
-            config.file_task_workflow = True
-            config.progress_change_callback = (
-                lambda **event: _record_pipeline_progress(paths, event)
-            )
-
-            try:
-                result = translate(config)
-            except FileTaskPending:
-                state = read_json(paths.state, state)
-                return _pending_response(
-                    paths,
+        if _page_plan_complete(state):
+            state["status"] = "done"
+            state["pending_task_hash"] = None
+            state.pop("last_error", None)
+            write_json(paths.state, state)
+            _write_progress_snapshot(
+                paths,
+                _annotate_progress_with_page_plan(
+                    _terminal_pipeline_progress(),
                     state,
-                    ValidationResult(
-                        False,
-                        state.get("status", "needs_ai_edit"),
-                        [],
-                        [],
-                    ),
-                )
-            except Exception as exc:
-                state["status"] = "error"
-                state["last_error"] = str(exc)
-                write_json(paths.state, state)
-                append_trace(
-                    paths,
-                    "advance_error",
-                    error=str(exc),
-                    traceback=traceback.format_exc(limit=8),
-                )
-                return {
-                    "status": "error",
-                    "editable_file": None,
-                    "instruction": "Fix the runtime error reported in validation_errors.",
-                    "progress": _progress(paths, state),
-                    "validation_errors": [str(exc)],
-                    "validation_warnings": [],
-                    "trace_tail": trace_tail(paths),
-                    "output_pdf": None,
-                    "output_pdfs": {},
-                }
-            finally:
-                shutdown_file_task_runtime()
-
-            shard_output_pdfs, _shard_output_pdf = _collect_output_pdfs(
-                result,
-                state["config"],
+                ),
             )
-            output_pdfs, output_pdf = _merge_page_output_pdfs(
+            append_trace(
+                paths,
+                "pdf_written",
+                output_pdf=_primary_output_pdf(state),
+                output_pdfs=state.get("output_pdfs", {}),
+            )
+            return _done_response(paths, state, validation.warnings)
+
+        translator = FileTaskTranslator(paths, state)
+        _record_memory_sample(paths, "load_model_start")
+        config = _build_translation_config(paths, state, translator)
+        _record_memory_sample(paths, "load_model")
+        config.file_task_workflow = True
+        config.progress_change_callback = (
+            lambda **event: _record_pipeline_progress(paths, event)
+        )
+        state["status"] = "running"
+        write_json(paths.state, state)
+
+        try:
+            result = translate(config)
+        except FileTaskPending:
+            state = read_json(paths.state, state)
+            return _pending_response(
                 paths,
                 state,
-                shard_output_pdfs,
+                ValidationResult(
+                    False,
+                    state.get("status", "needs_ai_edit"),
+                    [],
+                    [],
+                ),
             )
-            output_errors = _validate_output_pdfs(output_pdfs)
-            if output_errors:
-                state["status"] = "error"
-                state["last_error"] = "; ".join(output_errors)
-                state["pending_task_hash"] = None
-                state["output_pdfs"] = output_pdfs
-                write_json(paths.state, state)
-                append_trace(paths, "output_validation_error", errors=output_errors)
-                return {
-                    "status": "error",
-                    "editable_file": None,
-                    "instruction": "Fix the output validation errors reported in validation_errors.",
-                    "progress": _progress(paths, state),
-                    "validation_errors": output_errors,
-                    "validation_warnings": validation.warnings,
-                    "trace_tail": trace_tail(paths),
-                    "output_pdf": output_pdf,
-                    "output_pdfs": output_pdfs,
-                }
-
-            completed_page, next_page = mark_active_page_completed(state)
-            state["pending_task_hash"] = None
-            state["output_pdfs"] = output_pdfs
-            state.pop("last_error", None)
-            if next_page is None:
-                state["status"] = "done"
-                write_json(paths.state, state)
-                _write_progress_snapshot(
-                    paths,
-                    _annotate_progress_with_page_plan(
-                        _terminal_pipeline_progress(),
-                        state,
-                    ),
-                )
-                append_trace(
-                    paths,
-                    "pdf_written",
-                    output_pdf=output_pdf,
-                    output_pdfs=output_pdfs,
-                )
-                return _done_response(paths, state, validation.warnings)
-
-            state["status"] = "running"
+        except Exception as exc:
+            state["status"] = "error"
+            state["last_error"] = str(exc)
             write_json(paths.state, state)
             append_trace(
                 paths,
-                "page_completed",
-                page=completed_page,
-                next_page=next_page,
+                "advance_error",
+                error=str(exc),
+                traceback=traceback.format_exc(limit=8),
+            )
+            return {
+                "status": "error",
+                "editable_file": None,
+                "instruction": "Fix the runtime error reported in validation_errors.",
+                "progress": _progress(paths, state),
+                "validation_errors": [str(exc)],
+                "validation_warnings": [],
+                "trace_tail": trace_tail(paths),
+                "output_pdf": None,
+                "output_pdfs": {},
+            }
+        finally:
+            shutdown_file_task_runtime()
+
+        shard_output_pdfs, _shard_output_pdf = _collect_output_pdfs(
+            result,
+            state["config"],
+        )
+        output_pdfs, output_pdf = _merge_page_output_pdfs(
+            paths,
+            state,
+            shard_output_pdfs,
+        )
+        output_errors = _validate_output_pdfs(output_pdfs)
+        if output_errors:
+            state["status"] = "error"
+            state["last_error"] = "; ".join(output_errors)
+            state["pending_task_hash"] = None
+            state["output_pdfs"] = output_pdfs
+            write_json(paths.state, state)
+            append_trace(paths, "output_validation_error", errors=output_errors)
+            return {
+                "status": "error",
+                "editable_file": None,
+                "instruction": "Fix the output validation errors reported in validation_errors.",
+                "progress": _progress(paths, state),
+                "validation_errors": output_errors,
+                "validation_warnings": validation.warnings,
+                "trace_tail": trace_tail(paths),
+                "output_pdf": output_pdf,
+                "output_pdfs": output_pdfs,
+            }
+
+        completed_page, next_page = mark_active_page_completed(state)
+        state["pending_task_hash"] = None
+        state["output_pdfs"] = output_pdfs
+        state.pop("last_error", None)
+        if next_page is None:
+            state["status"] = "done"
+            write_json(paths.state, state)
+            _write_progress_snapshot(
+                paths,
+                _annotate_progress_with_page_plan(
+                    _terminal_pipeline_progress(),
+                    state,
+                ),
+            )
+            append_trace(
+                paths,
+                "pdf_written",
+                output_pdf=output_pdf,
                 output_pdfs=output_pdfs,
             )
+            return _done_response(paths, state, validation.warnings)
+
+        state["status"] = "page_completed"
+        state["last_completed_page"] = completed_page
+        state["next_page"] = next_page
+        write_json(paths.state, state)
+        _write_progress_snapshot(
+            paths,
+            _annotate_progress_with_page_plan(
+                _page_completed_pipeline_progress(completed_page),
+                state,
+            ),
+        )
+        append_trace(
+            paths,
+            "page_completed",
+            page=completed_page,
+            next_page=next_page,
+            output_pdfs=output_pdfs,
+        )
+        return _page_completed_response(
+            paths,
+            state,
+            completed_page,
+            next_page,
+            validation.warnings,
+        )
 
 
 def _build_translation_config(
@@ -327,6 +347,31 @@ def _done_response(paths, state: dict, warnings: list[str]) -> dict:
     }
 
 
+def _page_completed_response(
+    paths,
+    state: dict,
+    completed_page: int | None,
+    next_page: int | None,
+    warnings: list[str],
+) -> dict:
+    return {
+        "status": "page_completed",
+        "completed_page": completed_page,
+        "next_page": next_page,
+        "editable_file": None,
+        "instruction": (
+            f"Page {completed_page} is complete. Run advance again to start "
+            f"page {next_page}."
+        ),
+        "progress": _progress(paths, state),
+        "validation_errors": [],
+        "validation_warnings": warnings,
+        "trace_tail": trace_tail(paths),
+        "output_pdf": _primary_output_pdf(state),
+        "output_pdfs": state.get("output_pdfs", {}),
+    }
+
+
 def _instruction_for_pending(
     pending: dict,
     validation: ValidationResult,
@@ -390,6 +435,20 @@ def _record_pipeline_progress(paths, event: dict) -> None:
     if event_type == "stage_summary":
         append_trace(paths, "pipeline_stage_summary", stages=event.get("stages", []))
         return
+    if event_type == "memory_summary":
+        state = read_json(paths.state, {}) or {}
+        progress = read_json(paths.progress, {}) or {}
+        progress["memory_stages"] = event.get("memory_stages", {})
+        progress["peak_memory_mb"] = event.get("peak_memory_mb")
+        _write_progress_snapshot(paths, progress)
+        append_trace(
+            paths,
+            "pipeline_memory_summary",
+            memory_stages=event.get("memory_stages", {}),
+            peak_memory_mb=event.get("peak_memory_mb"),
+            page_plan=_public_page_plan(state),
+        )
+        return
 
     state = read_json(paths.state, {}) or {}
     progress = {
@@ -441,6 +500,22 @@ def _terminal_pipeline_progress() -> dict:
     }
 
 
+def _page_completed_pipeline_progress(completed_page: int | None) -> dict:
+    return {
+        "event_type": "page_completed",
+        "stage": "Page Completed",
+        "stage_progress": 100.0,
+        "stage_current": 1,
+        "stage_total": 1,
+        "overall_progress": 100.0,
+        "part_index": None,
+        "total_parts": None,
+        "paused_for_ai": False,
+        "completed_page": completed_page,
+        "updated_at": datetime.now().isoformat(timespec="seconds"),
+    }
+
+
 def _public_page_plan(state: dict) -> dict | None:
     page_plan = state.get("page_plan")
     if not isinstance(page_plan, dict):
@@ -484,6 +559,8 @@ def _page_progress(state: dict, pipeline_progress: dict | None) -> dict | None:
         active_fraction = 0.0
         completed_count = len(target_pages)
         active_page = None
+    elif state.get("status") == "page_completed":
+        active_fraction = 0.0
     else:
         stage_progress = 0.0
         if pipeline_progress:
@@ -510,6 +587,20 @@ def shutdown_file_task_runtime() -> None:
     except Exception:
         logger.debug("failed to close BabelDOC process pool", exc_info=True)
     gc.collect()
+
+
+def _record_memory_sample(paths, stage: str) -> None:
+    try:
+        value, _ = memory.get_memory_usage_with_throttle(
+            include_children=True,
+            prefer_pss=True,
+        )
+        peak_memory_mb = round(value / (1024 * 1024), 2)
+    except Exception as exc:
+        logger.debug("failed to record memory sample", exc_info=True)
+        append_trace(paths, "memory_sample_error", stage=stage, error=str(exc))
+        return
+    append_trace(paths, "memory_sample", stage=stage, peak_memory_mb=peak_memory_mb)
 
 
 def _config_drift_error(state: dict, current_config: dict) -> str | None:

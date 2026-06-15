@@ -11,6 +11,7 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
+from unittest.mock import Mock
 from unittest.mock import patch
 
 
@@ -493,6 +494,67 @@ class PagePlanRegressionTests(unittest.TestCase):
         self.assertNotIn("wrong page one", page_texts[0])
         self.assertNotIn("wrong page three", page_texts[2])
 
+    def test_advance_returns_page_completed_before_next_page(self) -> None:
+        import pymupdf
+
+        from file_task_pdf_translate.runner import advance
+        from file_task_pdf_translate.state import paths_for
+        from file_task_pdf_translate.state import read_json
+
+        workspace = self.tmp
+        write_test_pdf(workspace / "paper.pdf", ["source page one", "source page two"])
+        (workspace / "assets").mkdir()
+        (workspace / "pdf_translate.yaml").write_text(
+            """
+input_pdf: paper.pdf
+lang_in: en
+lang_out: zh-CN
+asset_dir: assets
+pages: "1-2"
+output_mode: mono
+watermark_output_mode: no_watermark
+auto_extract_glossary: false
+primary_font_family: null
+add_formula_placehold_hint: true
+""".lstrip(),
+            encoding="utf-8",
+        )
+        output_pdf = workspace / "translated.pdf"
+        write_test_pdf(output_pdf, ["translated page one", "unused page two"])
+        translate_result = SimpleNamespace(
+            mono_pdf_path=output_pdf,
+            dual_pdf_path=None,
+            no_watermark_mono_pdf_path=output_pdf,
+            no_watermark_dual_pdf_path=None,
+        )
+
+        with patch(
+            "file_task_pdf_translate.runner.set_runtime_asset_dir",
+            return_value=workspace / "assets",
+        ), patch(
+            "file_task_pdf_translate.runner.translate",
+            return_value=translate_result,
+        ), patch(
+            "file_task_pdf_translate.runner.shutdown_file_task_runtime",
+        ):
+            result = advance(workspace)
+
+        state = read_json(paths_for(workspace).state, {})
+        merged = pymupdf.open(result["output_pdf"])
+        try:
+            page_texts = [page.get_text("text") for page in merged]
+        finally:
+            merged.close()
+
+        self.assertEqual(result["status"], "page_completed")
+        self.assertEqual(result["completed_page"], 1)
+        self.assertEqual(result["next_page"], 2)
+        self.assertEqual(state["status"], "page_completed")
+        self.assertEqual(state["page_plan"]["completed_pages"], [1])
+        self.assertEqual(state["page_plan"]["active_page"], 2)
+        self.assertIn("translated page one", page_texts[0])
+        self.assertIn("source page two", page_texts[1])
+
     def test_progress_snapshot_reports_business_page_cursor(self) -> None:
         from file_task_pdf_translate.runner import _record_pipeline_progress
         from file_task_pdf_translate.state import ensure_dirs
@@ -722,23 +784,37 @@ items:
 
     def test_extracted_pdf_text_is_normalized_before_editable_tasks(self) -> None:
         from file_task_pdf_translate.editable import normalize_extracted_pdf_text
+        from file_task_pdf_translate.text_hygiene import HygieneBlock
+        from file_task_pdf_translate.text_hygiene import normalize_text_blocks
 
         source = (
             "The (cid:82) sta- bility proof uses measurementsR as a "
-            "proxyfor preservedor whichderived intheAppendix and dog -<b1>lion."
+            "thesemodelsoffer unprecedentedspeed, promisingtruly "
+            "introduceChordEdit and lowenergy control. dog -<b1>lion."
         )
 
         normalized = normalize_extracted_pdf_text(source)
 
-        self.assertIn("∫", normalized)
+        self.assertIn("†", normalized)
         self.assertIn("stability", normalized)
         self.assertIn("measurements R", normalized)
-        self.assertIn("proxyfor", normalized)
-        self.assertIn("preservedor", normalized)
-        self.assertIn("whichderived", normalized)
-        self.assertIn("intheAppendix", normalized)
+        self.assertIn("these models offer", normalized)
+        self.assertIn("unprecedented speed", normalized)
+        self.assertIn("promising truly", normalized)
+        self.assertIn("introduce ChordEdit", normalized)
+        self.assertIn("low energy", normalized)
         self.assertIn("dog -> lion", normalized)
         self.assertNotIn("<b1>", normalized)
+        blocks = normalize_text_blocks(
+            [
+                HygieneBlock("method that fa-"),
+                HygieneBlock("cilitates high-fidelity one-step editing."),
+            ]
+        )
+        self.assertEqual(
+            [block.text for block in blocks],
+            ["method that facilitates high-fidelity one-step editing."],
+        )
 
     def test_author_affiliation_boundaries_are_structurally_separated(self) -> None:
         from file_task_pdf_translate.editable import normalize_extracted_pdf_text
@@ -758,6 +834,137 @@ items:
         self.assertIn("Technology 2 Huizhou University", normalized)
         self.assertIn("University 3 Shenzhen University", normalized)
         self.assertIn("University 4 Peking University", normalized)
+
+    def test_placeholder_author_boundaries_are_spaced_before_editable_tasks(self) -> None:
+        from file_task_pdf_translate.editable import normalize_extracted_pdf_text
+
+        source = (
+            "Liangsi Lu<b1>Xuhang Chen<b2>Minzhe Guo<b3>Shichu Li"
+            "<b4>Jingchao Wang<b5>Yang Shi<b6><b7>Guangdong University "
+            "of Technology <b8>Huizhou University<b9>Shenzhen University"
+        )
+
+        normalized = normalize_extracted_pdf_text(
+            source,
+            {"layout_label": "author"},
+        )
+
+        self.assertIn("Lu <b1>Xuhang", normalized)
+        self.assertIn("Chen <b2>Minzhe", normalized)
+        self.assertIn("Guo <b3>Shichu", normalized)
+        self.assertIn("University <b9>Shenzhen", normalized)
+
+    def test_short_figure_labels_are_detected_for_term_split(self) -> None:
+        from file_task_pdf_translate.text_hygiene import is_figure_label_candidate
+
+        self.assertTrue(is_figure_label_candidate("snow", "plain text"))
+        self.assertTrue(is_figure_label_candidate("Edited image", "caption"))
+        self.assertFalse(is_figure_label_candidate("ChordEdit"))
+        self.assertFalse(
+            is_figure_label_candidate(
+                "Figure 1. ChordEdit mitigates the failures of naive editing.",
+                "caption",
+            )
+        )
+
+    def test_paragraph_finder_merges_hyphenated_continuation_paragraphs(self) -> None:
+        from babeldoc.format.pdf.document_il.il_version_1 import Box
+        from babeldoc.format.pdf.document_il.il_version_1 import PdfCharacter
+        from babeldoc.format.pdf.document_il.il_version_1 import PdfLine
+        from babeldoc.format.pdf.document_il.il_version_1 import PdfParagraph
+        from babeldoc.format.pdf.document_il.il_version_1 import PdfParagraphComposition
+        from babeldoc.format.pdf.document_il.il_version_1 import PdfStyle
+        from babeldoc.format.pdf.document_il.il_version_1 import VisualBbox
+        from babeldoc.format.pdf.document_il.midend.paragraph_finder import ParagraphFinder
+
+        def paragraph(text: str, y: float) -> PdfParagraph:
+            style = PdfStyle(font_id="f1", font_size=10)
+            chars = []
+            for index, char in enumerate(text):
+                box = Box(index * 5, y, index * 5 + 4, y + 8)
+                chars.append(
+                    PdfCharacter(
+                        pdf_style=style,
+                        box=box,
+                        visual_bbox=VisualBbox(box=box),
+                        char_unicode=char,
+                        xobj_id=7,
+                    )
+                )
+            line = PdfLine(
+                box=Box(0, y, max(len(text), 1) * 5, y + 8),
+                pdf_character=chars,
+            )
+            return PdfParagraph(
+                box=line.box,
+                pdf_style=style,
+                pdf_paragraph_composition=[PdfParagraphComposition(pdf_line=line)],
+                xobj_id=7,
+                unicode=text,
+                layout_id=42,
+            )
+
+        paragraphs = [paragraph("fa-", 10), paragraph("cilitates", 24)]
+
+        finder = object.__new__(ParagraphFinder)
+        finder.merge_hyphenated_continuation_paragraphs(paragraphs)
+
+        self.assertEqual(len(paragraphs), 1)
+        self.assertEqual(paragraphs[0].unicode, "facilitates")
+
+    def test_short_figure_labels_skip_term_extraction(self) -> None:
+        from babeldoc.format.pdf.document_il.il_version_1 import Box
+        from babeldoc.format.pdf.document_il.il_version_1 import Page
+        from babeldoc.format.pdf.document_il.il_version_1 import PdfCharacter
+        from babeldoc.format.pdf.document_il.il_version_1 import PdfLine
+        from babeldoc.format.pdf.document_il.il_version_1 import PdfParagraph
+        from babeldoc.format.pdf.document_il.il_version_1 import PdfParagraphComposition
+        from babeldoc.format.pdf.document_il.il_version_1 import PdfStyle
+        from babeldoc.format.pdf.document_il.il_version_1 import VisualBbox
+        from babeldoc.format.pdf.document_il.midend.automatic_term_extractor import (
+            AutomaticTermExtractor,
+        )
+
+        style = PdfStyle(font_id="f1", font_size=10)
+        chars = []
+        for index, char in enumerate("snow"):
+            box = Box(index * 5, 0, index * 5 + 4, 8)
+            chars.append(
+                PdfCharacter(
+                    pdf_style=style,
+                    box=box,
+                    visual_bbox=VisualBbox(box=box),
+                    char_unicode=char,
+                    xobj_id=1,
+                )
+            )
+        paragraph = PdfParagraph(
+            box=Box(0, 0, 20, 8),
+            pdf_style=style,
+            pdf_paragraph_composition=[
+                PdfParagraphComposition(
+                    pdf_line=PdfLine(box=Box(0, 0, 20, 8), pdf_character=chars)
+                )
+            ],
+            xobj_id=1,
+            unicode="snow",
+            debug_id="label-1",
+            layout_label="plain text",
+            layout_id=3,
+        )
+        page = Page(pdf_paragraph=[paragraph])
+        executor = SimpleNamespace(submit=Mock())
+        pbar = SimpleNamespace(advance=Mock())
+        extractor = object.__new__(AutomaticTermExtractor)
+        extractor.translation_config = SimpleNamespace(
+            file_task_workflow=True,
+            raise_if_cancelled=lambda: None,
+        )
+
+        extractor.process_page(page, executor, pbar)
+
+        pbar.advance.assert_called_once_with(1)
+        executor.submit.assert_not_called()
 
 
 class TermValidationRegressionTests(unittest.TestCase):
@@ -966,6 +1173,43 @@ class EditableYamlWorkflowTests(unittest.TestCase):
         self.assertIsNone(final_state["pending_task_hash"])
         self.assertNotIn("accepted", final_state)
 
+    def test_translation_task_hash_ignores_random_hygiene_context(self) -> None:
+        from file_task_pdf_translate.state import ensure_dirs
+        from file_task_pdf_translate.state import paths_for
+        from file_task_pdf_translate.translator import FileTaskTranslator
+
+        paths = paths_for(self.tmp)
+        ensure_dirs(paths)
+        state = {
+            "config": {
+                "lang_in": "en",
+                "lang_out": "zh-CN",
+            },
+            "pending_task_hash": None,
+            "status": "running",
+        }
+        translator = FileTaskTranslator(paths, state)
+
+        first = translator._translation_task_from_items(
+            [
+                {
+                    "id": 0,
+                    "input": "hello",
+                    "hygiene_context": {"debug_id": "random-a"},
+                }
+            ]
+        )
+        second = translator._translation_task_from_items(
+            [
+                {
+                    "id": 0,
+                    "input": "hello",
+                    "hygiene_context": {"debug_id": "random-b"},
+                }
+            ]
+        )
+
+        self.assertEqual(first["task_hash"], second["task_hash"])
 
     def test_translation_validation_reports_placeholder_sequence_diff(self) -> None:
         from file_task_pdf_translate.editable import EditableBlock
@@ -1066,6 +1310,59 @@ class EditableYamlWorkflowTests(unittest.TestCase):
         self.assertTrue(result.accepted)
         accepted = read_json(paths.accepted / "preserve-source-placeholder.answer.json", None)
         self.assertEqual(accepted, [{"id": 0, "output": "<b1> text"}])
+
+    def test_translation_validation_preserves_real_chordedit_marker(self) -> None:
+        from file_task_pdf_translate.editable import EditableBlock
+        from file_task_pdf_translate.editable import render_editable_document
+        from file_task_pdf_translate.state import ensure_dirs
+        from file_task_pdf_translate.state import pending_snapshot_path
+        from file_task_pdf_translate.state import paths_for
+        from file_task_pdf_translate.state import read_json
+        from file_task_pdf_translate.state import write_json
+        from file_task_pdf_translate.validation import validate_pending
+
+        paths = paths_for(self.tmp)
+        ensure_dirs(paths)
+        source = "<b1>ChordEdit</b1> mitigates editing failures."
+        pending = {
+            "task_type": "translate",
+            "task_hash": "preserve-chordedit-marker",
+            "blocks": [
+                {
+                    "source": source,
+                    "original_source": source,
+                    "required_placeholders": ["<b1>", "</b1>"],
+                }
+            ],
+        }
+        state = {
+            "pending_task_hash": pending["task_hash"],
+            "status": "needs_ai_edit",
+        }
+        write_json(pending_snapshot_path(paths, pending["task_hash"]), pending)
+        write_json(paths.state, state)
+        paths.current_translation.write_text(
+            render_editable_document(
+                "translate",
+                [
+                    EditableBlock(
+                        source=source,
+                        translation="<b1>ChordEdit</b1> 缓解了编辑失败。",
+                    )
+                ],
+                "zh-CN",
+            ),
+            encoding="utf-8",
+        )
+
+        result = validate_pending(paths, state)
+
+        self.assertTrue(result.accepted)
+        accepted = read_json(paths.accepted / "preserve-chordedit-marker.answer.json", None)
+        self.assertEqual(
+            accepted,
+            [{"id": 0, "output": "<b1>ChordEdit</b1> 缓解了编辑失败。"}],
+        )
 
     def test_translation_validation_rejects_added_placeholders(self) -> None:
         from file_task_pdf_translate.editable import EditableBlock
@@ -1346,6 +1643,36 @@ class ProgressPersistenceRegressionTests(unittest.TestCase):
         self.assertLess(progress["stage_progress"], 100.0)
         self.assertTrue(progress["paused_for_ai"])
         self.assertNotIn("pipeline_progress", state)
+
+    def test_memory_summary_is_persisted_with_progress(self) -> None:
+        from file_task_pdf_translate.runner import _record_pipeline_progress
+        from file_task_pdf_translate.state import ensure_dirs
+        from file_task_pdf_translate.state import paths_for
+        from file_task_pdf_translate.state import read_json
+        from file_task_pdf_translate.state import write_json
+
+        paths = paths_for(self.tmp)
+        ensure_dirs(paths)
+        write_json(paths.state, {"status": "running"})
+
+        _record_pipeline_progress(
+            paths,
+            {
+                "type": "memory_summary",
+                "peak_memory_mb": 123.4,
+                "memory_stages": {
+                    "load_model": 90.0,
+                    "parse_layout": 101.0,
+                    "translate": 111.0,
+                    "font_subset": 120.0,
+                    "pdf_save": 123.4,
+                },
+            },
+        )
+
+        progress = read_json(paths.progress, None)
+        self.assertEqual(progress["peak_memory_mb"], 123.4)
+        self.assertEqual(progress["memory_stages"]["font_subset"], 120.0)
 
 
 class ProcessExitRegressionTests(unittest.TestCase):

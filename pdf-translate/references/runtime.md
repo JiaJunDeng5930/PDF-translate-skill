@@ -22,18 +22,19 @@ Translation-stage state:
 - `.pdf_translate/trace.jsonl`: compact config, progress, validation, answer, and output events.
 - `.pdf_translate/advance.lock`: PID and timestamp metadata for the active advance process. A live PID returns `locked`; a missing PID is recovered as stale and traced before the run continues.
 
-The runtime re-enters the internal PDF pipeline on each advance and replays accepted answers by stable task hash. The frozen `pages` config defines the target page set. `state.json` stores `page_plan.target_pages`, `page_plan.active_page`, and `page_plan.completed_pages` as the runtime cursor. BabelDOC receives a single-page `pages` value for the active shard. The file-task workflow has no preprocessing checkpoint layer; debug IL dumps use JSON only.
+The runtime re-enters the internal PDF pipeline on each advance and replays accepted answers by stable task hash. The frozen `pages` config defines the target page set. `state.json` stores `page_plan.target_pages`, `page_plan.active_page`, and `page_plan.completed_pages` as the runtime cursor. BabelDOC receives a single-page `pages` value for the active shard. A completed shard returns `status: page_completed`, `completed_page`, `next_page`, and the merged `output_pdfs`; the next advance starts `next_page`. The file-task workflow has no preprocessing checkpoint layer; debug IL dumps use JSON only.
 
 Each completed shard writes private PDFs under `.pdf_translate/page_outputs/`. The public output in `output/` is produced by replacing only `active_page` in the original or cumulative PDF with the corresponding page from the shard PDF. Pages outside `page_plan.target_pages` remain sourced from the original PDF.
 
-The synchronous BabelDOC progress monitor writes the latest pipeline stage into `.pdf_translate/progress.json`. Stage starts, ends, and AI pauses are also recorded in `trace.jsonl`. `paused_for_ai` is derived from `status in {"needs_ai_edit", "needs_ai_fix"}`. Current UI progress should read `page_progress`, which is derived from the persisted page cursor. Historical trace events are audit data. A `done` state reports terminal progress with `overall_progress: 100` and `paused_for_ai: false`.
+The synchronous BabelDOC progress monitor writes the latest pipeline stage into `.pdf_translate/progress.json`. Stage starts, ends, AI pauses, page completion, and memory summaries are also recorded in `trace.jsonl`. `paused_for_ai` is derived from `status in {"needs_ai_edit", "needs_ai_fix"}`. Current UI progress should read `page_progress`, which is derived from the persisted page cursor. Historical trace events are audit data. A `done` state reports terminal progress with `overall_progress: 100` and `paused_for_ai: false`.
 
 The BabelDOC-derived pipeline files with file-task changes are:
 
 - `babeldoc/file_task_bridge.py`: pending exception and immediate executor.
 - `babeldoc/format/pdf/document_il/midend/automatic_term_extractor.py`: file-task sequential term extraction and pending propagation.
 - `babeldoc/format/pdf/document_il/midend/il_translator_llm_only.py`: file-task sequential translation batches and pending propagation.
-- `babeldoc/format/pdf/high_level.py`: file-task pending propagation through the high-level pipeline.
+- `babeldoc/format/pdf/high_level.py`: file-task pending propagation and stage memory summaries through the high-level pipeline.
+- `file_task_pdf_translate/text_hygiene.py`: editable-source cleanup, paragraph context serialization, figure-label detection, and placeholder boundary repair before YAML tasks.
 
 Validation invariants:
 

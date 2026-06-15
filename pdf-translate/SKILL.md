@@ -10,7 +10,19 @@ description: Use this skill to translate local academic or technical PDFs with a
 Prepare runtime assets before translating:
 
 ```text
-python "<skill-dir>\scripts\download_assets.py" "<asset-dir>"
+python "<skill-dir>/scripts/download_assets.py" "<asset-dir>"
+```
+
+Windows PowerShell:
+
+```powershell
+python "<skill-dir>/scripts/download_assets.py" "<asset-dir>"
+```
+
+Unix shell:
+
+```sh
+python "<skill-dir>/scripts/download_assets.py" "<asset-dir>"
 ```
 
 Create `pdf_translate.yaml` in the PDF workspace before the first run. Include the source PDF, languages, asset directory, output mode, watermark mode, and pipeline options. Read `references/config.md` for the full schema.
@@ -34,7 +46,7 @@ add_formula_placehold_hint: true
 Run the bundled no-argument script from the configured PDF workspace:
 
 ```powershell
-python "<skill-dir>\scripts\advance.py"
+python "<skill-dir>/scripts/advance.py"
 ```
 
 Follow the returned `status`:
@@ -43,6 +55,7 @@ Follow the returned `status`:
 - `asset_error`: prepare the configured `asset_dir` with `scripts/download_assets.py`, then run advance again.
 - `needs_ai_edit`: open `editable_file`, edit the YAML fields, save, then run advance again.
 - `needs_ai_fix`: correct the same file according to `validation_errors`, save, then run advance again.
+- `page_completed`: one page shard was merged into `output_pdfs`; run advance again to start `next_page`.
 - `done`: deliver `output_pdf` and use `output_pdfs` when multiple variants were generated.
 - `error`: inspect `validation_errors` and the trace tail.
 

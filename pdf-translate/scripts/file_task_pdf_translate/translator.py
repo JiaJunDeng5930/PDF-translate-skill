@@ -16,6 +16,8 @@ from .state import WorkspacePaths
 from .state import load_accepted_answer
 from .state import save_pending_task
 from .state import stable_hash
+from .text_hygiene import HygieneBlock
+from .text_hygiene import normalize_text_blocks
 
 TRANSLATION_INPUT_MARKER = "## Here is the input:"
 SINGLE_TEXT_MARKER = "Now translate the following text:"
@@ -92,22 +94,26 @@ class FileTaskTranslator(BaseTranslator):
         blocks = []
         for item in items:
             original_source = item.get("input", "")
-            display_source = normalize_extracted_pdf_text(original_source)
+            context = item.get("hygiene_context")
+            display_source = normalize_extracted_pdf_text(original_source, context)
             blocks.append(
                 {
                     "source": display_source,
                     "original_source": original_source,
                     "required_placeholders": placeholder_sequence(display_source),
                     "layout_label": item.get("layout_label"),
+                    "text_role": item.get("text_role"),
+                    "hygiene_context": context,
                 }
             )
 
+        hash_blocks = [_hashable_block(block) for block in blocks]
         hash_payload = {
             "task_type": "translate",
             "lang_in": self.state["config"]["lang_in"],
             "lang_out": self.state["config"]["lang_out"],
             "page": active_page,
-            "blocks": blocks,
+            "blocks": hash_blocks,
         }
         task_hash = stable_hash(hash_payload)
         return {
@@ -122,12 +128,15 @@ class FileTaskTranslator(BaseTranslator):
     def _term_task_from_chunks(self, chunks: list[str]) -> dict:
         active_page = self._active_page()
         blocks = []
-        for chunk in chunks:
-            display_source = normalize_extracted_pdf_text(chunk)
+        hygiene_blocks = normalize_text_blocks(
+            [HygieneBlock(text=chunk) for chunk in chunks]
+        )
+        for block in hygiene_blocks:
+            display_source = block.text
             blocks.append(
                 {
                     "source": display_source,
-                    "original_source": chunk,
+                    "original_source": display_source,
                     "required_placeholders": placeholder_sequence(display_source),
                 }
             )
@@ -136,7 +145,7 @@ class FileTaskTranslator(BaseTranslator):
             "lang_in": self.state["config"]["lang_in"],
             "lang_out": self.state["config"]["lang_out"],
             "page": active_page,
-            "blocks": blocks,
+            "blocks": [_hashable_block(block) for block in blocks],
         }
         task_hash = stable_hash(hash_payload)
         return {
@@ -147,3 +156,11 @@ class FileTaskTranslator(BaseTranslator):
             "page": active_page,
             "blocks": blocks,
         }
+
+
+def _hashable_block(block: dict) -> dict:
+    return {
+        key: value
+        for key, value in block.items()
+        if key != "hygiene_context"
+    }

@@ -311,6 +311,7 @@ class MemoryMonitor:
         self.monitor_thread = None
         self.stop_event = None
         self.last_pss_check_time = None
+        self.stage_peaks: dict[str, float] = {}
 
     def __enter__(self):
         """Start memory monitoring."""
@@ -330,6 +331,8 @@ class MemoryMonitor:
         self.stop_event.set()
         self.monitor_thread.join(timeout=2.0)
         logger.info(f"Peak memory usage: {self.peak_memory_usage:.2f} MB")
+        for stage, peak in sorted(self.stage_peaks.items()):
+            logger.info("Stage %s peak memory usage: %.2f MB", stage, peak)
 
     def _monitor_memory_usage(self):
         """Background thread that periodically checks memory usage."""
@@ -357,6 +360,22 @@ class MemoryMonitor:
     def get_peek_memory_psutil(self):
         """Get peak memory usage using psutil (for backwards compatibility)."""
         return memory.get_memory_usage_bytes(include_children=True, prefer_pss=True)
+
+    def sample(self, stage: str) -> float:
+        total_memory, self.last_pss_check_time = memory.get_memory_usage_with_throttle(
+            include_children=True,
+            prefer_pss=True,
+            last_pss_check_time=self.last_pss_check_time,
+            pss_throttle_seconds=0.0,
+        )
+        total_memory_mb = total_memory / (1024 * 1024)
+        self.stage_peaks[stage] = max(
+            self.stage_peaks.get(stage, 0.0),
+            total_memory_mb,
+        )
+        if total_memory_mb > self.peak_memory_usage:
+            self.peak_memory_usage = total_memory_mb
+        return total_memory_mb
 
 
 def fix_null_page_content(doc: Document) -> list[int]:
@@ -462,8 +481,10 @@ def do_translate(
         start_time = time.time()
         peak_memory_usage = 0
         with MemoryMonitor() as memory_monitor:
+            translation_config.memory_monitor = memory_monitor
             result = _do_translate_single(pm, translation_config)
             peak_memory_usage = memory_monitor.peak_memory_usage
+            stage_peaks = dict(memory_monitor.stage_peaks)
 
         finish_time = time.time()
         result.total_seconds = finish_time - start_time
@@ -490,6 +511,16 @@ def do_translate(
                 pass
         result.original_pdf_path = translation_config.input_file
         result.peak_memory_usage = peak_memory_usage
+        result.stage_peak_memory_usage = stage_peaks
+        progress_callback = getattr(translation_config, "progress_change_callback", None)
+        if progress_callback:
+            progress_callback(
+                type="memory_summary",
+                peak_memory_mb=round(peak_memory_usage, 2),
+                memory_stages={
+                    stage: round(value, 2) for stage, value in stage_peaks.items()
+                },
+            )
 
         fix_cmap(result, translation_config)
         add_metadata(result, translation_config)
@@ -610,12 +641,26 @@ def check_cid_char(il: il_version_1.Document):
     return cid_count > len(chars) * 0.8
 
 
+def _sample_memory_stage(
+    translation_config: TranslationConfig,
+    stage: str,
+) -> None:
+    monitor = getattr(translation_config, "memory_monitor", None)
+    if monitor is None:
+        return
+    try:
+        monitor.sample(stage)
+    except Exception:
+        logger.debug("failed to sample memory stage %s", stage, exc_info=True)
+
+
 def _do_translate_single(
     pm: ProgressMonitor,
     translation_config: TranslationConfig,
 ) -> TranslateResult:
     """Original translation logic for a single document or part"""
     translation_config.progress_monitor = pm
+    _sample_memory_stage(translation_config, "translate_start")
 
     if translation_config.shared_context_cross_split_part.auto_enabled_ocr_workaround:
         translation_config.ocr_workaround = True
@@ -684,6 +729,7 @@ def _do_translate_single(
         config=translation_config,
         doc_pdf=doc_pdf2zh,
     )
+    _sample_memory_stage(translation_config, "parse_pdf")
     logger.debug(f"finish parse il from {temp_pdf_path}")
     logger.debug(f"finish create il from {temp_pdf_path}")
     if translation_config.only_include_translated_page and not docs.page:
@@ -728,6 +774,7 @@ def _do_translate_single(
     # Generate layouts for all pages
     logger.debug("start generating layouts")
     docs = LayoutParser(translation_config).process(docs, doc_pdf2zh)
+    _sample_memory_stage(translation_config, "parse_layout")
     logger.debug("finish generating layouts")
     close_process_pool()
     if translation_config.debug:
@@ -737,6 +784,7 @@ def _do_translate_single(
         )
 
     ParagraphFinder(translation_config).process(docs)
+    _sample_memory_stage(translation_config, "parse_paragraphs")
     logger.debug(f"finish paragraph finder from {temp_pdf_path}")
     if translation_config.debug:
         json_converter.write_json(
@@ -744,6 +792,7 @@ def _do_translate_single(
             translation_config.get_working_file_path("paragraph_finder.json"),
         )
     StylesAndFormulas(translation_config).process(docs)
+    _sample_memory_stage(translation_config, "parse_formulas_styles")
     logger.debug(f"finish styles and formulas from {temp_pdf_path}")
     if translation_config.debug:
         json_converter.write_json(
@@ -761,6 +810,7 @@ def _do_translate_single(
         AutomaticTermExtractor(term_extraction_engine, translation_config).procress(
             docs
         )
+        _sample_memory_stage(translation_config, "term_extract")
 
     if not translation_config.skip_translation:
         if support_llm_translate:
@@ -769,6 +819,7 @@ def _do_translate_single(
             il_translator = ILTranslator(translate_engine, translation_config)
 
         il_translator.translate(docs)
+        _sample_memory_stage(translation_config, "translate")
         del il_translator
         logger.debug(f"finish ILTranslator from {temp_pdf_path}")
     else:
@@ -804,6 +855,7 @@ def _do_translate_single(
         dual_watermark_first_page_doc_bytes = None
 
     Typesetting(translation_config).typesetting_document(docs)
+    _sample_memory_stage(translation_config, "typesetting")
     logger.debug(f"finish typsetting from {temp_pdf_path}")
     if translation_config.debug:
         json_converter.write_json(
@@ -813,6 +865,7 @@ def _do_translate_single(
 
     pdf_creater = PDFCreater(temp_pdf_path, docs, translation_config, mediabox_data)
     result = pdf_creater.write(translation_config)
+    _sample_memory_stage(translation_config, "pdf_save")
     try:
         if mono_watermark_first_page_doc_bytes:
             mono_watermark_pdf = merge_watermark_doc(

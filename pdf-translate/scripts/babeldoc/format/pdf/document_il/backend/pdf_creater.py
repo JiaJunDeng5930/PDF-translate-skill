@@ -37,6 +37,16 @@ _EXTGSTATE_USAGE_RE = re.compile(rb"/([!#$%&'*+,\-.0-9:;=?@A-Z\\^_`a-z{|}~]+)\s+
 _SHADING_USAGE_RE = re.compile(rb"/([!#$%&'*+,\-.0-9:;=?@A-Z\\^_`a-z{|}~]+)\s+sh\b")
 
 
+def _sample_memory_stage(translation_config: TranslationConfig, stage: str) -> None:
+    monitor = getattr(translation_config, "memory_monitor", None)
+    if monitor is None:
+        return
+    try:
+        monitor.sample(stage)
+    except Exception:
+        logger.debug("failed to sample memory stage %s", stage, exc_info=True)
+
+
 def _finite_float(value) -> float | None:
     try:
         number = float(value)
@@ -1528,6 +1538,7 @@ class PDFCreater:
                     pdf = self.subset_fonts_in_subprocess(
                         pdf, translation_config, tag="mono"
                     )
+                _sample_memory_stage(translation_config, "font_subset")
 
                 pbar.advance()
             try:
@@ -1574,6 +1585,7 @@ class PDFCreater:
                         linear=False,
                         tag="mono",
                     )
+                    _sample_memory_stage(translation_config, "pdf_save")
                 pbar.advance()
                 dual_out_path = None
                 if not translation_config.no_dual:
@@ -1635,6 +1647,7 @@ class PDFCreater:
                         linear=False,
                         tag="dual",
                     )
+                    _sample_memory_stage(translation_config, "pdf_save")
                     if translation_config.debug:
                         translation_config.raise_if_cancelled()
                         dual.save(

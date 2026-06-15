@@ -292,6 +292,7 @@ class ParagraphFinder:
 
         for paragraph in paragraphs:
             self.update_paragraph_data(paragraph, update_unicode=True)
+        self.merge_hyphenated_continuation_paragraphs(paragraphs)
 
         if self.translation_config.ocr_workaround:
             self.add_text_fill_background(page)
@@ -416,6 +417,71 @@ class ParagraphFinder:
                     # 不移动 i，继续尝试把更多正文接到 a，实现 a l+ a l+ a ... 链式合并
                     continue
             i += 1
+
+    def merge_hyphenated_continuation_paragraphs(
+        self,
+        paragraphs: list[PdfParagraph],
+    ) -> None:
+        if len(paragraphs) < 2:
+            return
+        i = 0
+        while i < len(paragraphs) - 1:
+            current = paragraphs[i]
+            following = paragraphs[i + 1]
+            if self._is_hyphenated_continuation(current, following):
+                merged_unicode = self._merged_hyphenated_unicode(current, following)
+                self._remove_trailing_hyphen(current)
+                current.pdf_paragraph_composition.extend(
+                    following.pdf_paragraph_composition
+                )
+                self.update_paragraph_data(current)
+                current.unicode = merged_unicode
+                del paragraphs[i + 1]
+                continue
+            i += 1
+
+    def _merged_hyphenated_unicode(
+        self,
+        current: PdfParagraph,
+        following: PdfParagraph,
+    ) -> str:
+        left = (current.unicode or self._paragraph_text_ascii(current)).rstrip()
+        right = (following.unicode or self._paragraph_text_ascii(following)).lstrip()
+        return re.sub(r"-\s*$", "", left) + right
+
+    def _is_hyphenated_continuation(
+        self,
+        current: PdfParagraph,
+        following: PdfParagraph,
+    ) -> bool:
+        if not self._same_layout_and_xobj(current, following):
+            return False
+        left = self._paragraph_text_ascii(current).rstrip()
+        right = self._paragraph_text_ascii(following).lstrip()
+        return bool(
+            re.search(r"[A-Za-z]{2,}-$", left)
+            and re.match(r"^[a-z]{2,}", right)
+        )
+
+    def _remove_trailing_hyphen(self, paragraph: PdfParagraph) -> None:
+        for index in range(len(paragraph.pdf_paragraph_composition) - 1, -1, -1):
+            composition = paragraph.pdf_paragraph_composition[index]
+            chars = []
+            if composition.pdf_line:
+                chars = composition.pdf_line.pdf_character
+            elif composition.pdf_character:
+                chars = [composition.pdf_character]
+            if not chars:
+                continue
+            while chars and (chars[-1].char_unicode or "").isspace():
+                chars.pop()
+            if chars and chars[-1].char_unicode == "-":
+                chars.pop()
+                if composition.pdf_line and chars:
+                    self.update_line_data(composition.pdf_line)
+                else:
+                    del paragraph.pdf_paragraph_composition[index]
+                return
 
     def _group_characters_into_paragraphs(
         self, page: Page, layout_index, layout_map

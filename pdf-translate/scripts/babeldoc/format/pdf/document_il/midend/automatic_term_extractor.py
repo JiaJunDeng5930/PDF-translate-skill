@@ -32,6 +32,10 @@ from babeldoc.file_task_bridge import ImmediateExecutor
 from babeldoc.file_task_bridge import FileTaskPending
 from babeldoc.file_task_bridge import is_file_task_workflow
 from babeldoc.utils.priority_thread_pool_executor import PriorityThreadPoolExecutor
+from file_task_pdf_translate.text_hygiene import HygieneBlock
+from file_task_pdf_translate.text_hygiene import is_figure_label_candidate
+from file_task_pdf_translate.text_hygiene import normalize_text_blocks
+from file_task_pdf_translate.text_hygiene import paragraph_hygiene_context
 
 if TYPE_CHECKING:
     from babeldoc.format.pdf.translation_config import TranslationConfig
@@ -257,6 +261,16 @@ class AutomaticTermExtractor:
             if is_placeholder_only_paragraph(paragraph):
                 pbar.advance(1)
                 continue
+            context = paragraph_hygiene_context(paragraph, page)
+            if is_file_task_workflow(
+                self.translation_config
+            ) and is_figure_label_candidate(
+                paragraph.unicode,
+                getattr(paragraph, "layout_label", None),
+                context,
+            ):
+                pbar.advance(1)
+                continue
             # if len(paragraph.unicode) < self.translation_config.min_text_length:
             #     pbar.advance(1)
             #     continue
@@ -290,7 +304,17 @@ class AutomaticTermExtractor:
     ):
         self.translation_config.raise_if_cancelled()
         try:
-            inputs = [p.unicode for p in paragraphs.paragraphs if p.unicode]
+            hygiene_blocks = normalize_text_blocks(
+                [
+                    HygieneBlock(
+                        text=p.unicode,
+                        context=paragraph_hygiene_context(p),
+                    )
+                    for p in paragraphs.paragraphs
+                    if p.unicode
+                ]
+            )
+            inputs = [block.text for block in hygiene_blocks if block.text]
             tracker = paragraphs.tracker
             for u in inputs:
                 tracker.append_paragraph_unicode(u)

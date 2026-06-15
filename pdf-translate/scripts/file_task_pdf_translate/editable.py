@@ -3,20 +3,14 @@
 
 from __future__ import annotations
 
-import re
-import unicodedata
 from dataclasses import dataclass
 from dataclasses import field
 from typing import Any
 
 import yaml
 
-PLACEHOLDER_RE = re.compile(r"</?b\d+>", re.IGNORECASE)
-ARROW_PLACEHOLDER_RE = re.compile(r"(?<=\w)\s*-\s*</?b\d+>\s*(?=\w)", re.IGNORECASE)
-CID_TEXT_RE = re.compile(r"\(cid:(?P<code>\d+)\)")
-CID_TEXT_REPLACEMENTS = {
-    "82": "∫",
-}
+from .text_hygiene import normalize_extracted_pdf_text
+from .text_hygiene import placeholder_sequence
 
 
 @dataclass
@@ -144,25 +138,6 @@ def _parse_item(
     return EditableBlock(source=source, translation=translation), []
 
 
-def normalize_extracted_pdf_text(text: str) -> str:
-    normalized = unicodedata.normalize("NFKC", str(text))
-    normalized = normalized.replace("\u00ad", "")
-    normalized = re.sub(
-        CID_TEXT_RE,
-        lambda match: CID_TEXT_REPLACEMENTS.get(match.group("code"), match.group(0)),
-        normalized,
-    )
-    normalized = ARROW_PLACEHOLDER_RE.sub(" -> ", normalized)
-    normalized = re.sub(r"(?<=\w)-\s+(?=\w)", "", normalized)
-    normalized = re.sub(r",(?=\S)", ", ", normalized)
-    normalized = re.sub(r"(?<=[A-Za-z])(?=\d+(?:[,;†‡*]|\s*[A-Z]))", " ", normalized)
-    normalized = re.sub(r"(?<=\d)(?=[A-Z][a-z])", " ", normalized)
-    normalized = re.sub(r"(?<=[a-z])(?=[A-Z](?:\b|[^a-z]))", " ", normalized)
-    normalized = re.sub(r"[ \t]+", " ", normalized)
-    normalized = re.sub(r"[ \t]*\n[ \t]*", "\n", normalized)
-    return normalized.strip()
-
-
 def _parse_terms(raw_terms, item_index: int) -> tuple[list[TermPair], list[str]]:
     if raw_terms is None:
         return [], []
@@ -185,7 +160,3 @@ def _parse_terms(raw_terms, item_index: int) -> tuple[list[TermPair], list[str]]
             continue
         terms.append(TermPair(source=source.strip(), target=target.strip()))
     return terms, errors
-
-
-def placeholder_sequence(text: str) -> list[str]:
-    return [match.group(0) for match in PLACEHOLDER_RE.finditer(text)]
