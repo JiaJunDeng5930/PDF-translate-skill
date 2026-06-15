@@ -8,7 +8,6 @@ from collections.abc import Generator
 import cv2
 import numpy as np
 
-from babeldoc.docvision.base_doclayout import DocLayoutModel
 from babeldoc.docvision.base_doclayout import YoloResult
 from babeldoc.format.pdf.document_il.utils.mupdf_helper import get_no_rotation_img
 
@@ -34,8 +33,17 @@ logger = logging.getLogger(__name__)
 os_name = platform.system()
 
 
-class OnnxModel(DocLayoutModel):
+class OnnxModel:
     _FIXED_IMGSZ = 1024  # fixed input size for static-shape CoreML
+
+    @staticmethod
+    def load_onnx():
+        logger.info("Loading ONNX model...")
+        return OnnxModel.from_pretrained()
+
+    @staticmethod
+    def load_available():
+        return OnnxModel.load_onnx()
 
     def __init__(self, model_path: str):
         self.model_path = model_path

@@ -5,8 +5,6 @@ import time
 from abc import ABC
 from abc import abstractmethod
 
-from babeldoc.translator.cache import TranslationCache
-
 logger = logging.getLogger(__name__)
 
 
@@ -49,72 +47,29 @@ class BaseTranslator(ABC):
     name = "base"
     lang_map = {}
 
-    def __init__(self, lang_in, lang_out, ignore_cache):
-        self.ignore_cache = ignore_cache
+    def __init__(self, lang_in, lang_out):
         lang_in = self.lang_map.get(lang_in.lower(), lang_in)
         lang_out = self.lang_map.get(lang_out.lower(), lang_out)
         self.lang_in = lang_in
         self.lang_out = lang_out
 
-        self.cache = TranslationCache(
-            self.name,
-            {
-                "lang_in": lang_in,
-                "lang_out": lang_out,
-            },
-        )
-
         self.translate_call_count = 0
-        self.translate_cache_call_count = 0
 
     def __del__(self):
         with contextlib.suppress(Exception):
             logger.info(
                 f"{self.name} translate call count: {self.translate_call_count}"
             )
-            logger.info(
-                f"{self.name} translate cache call count: {self.translate_cache_call_count}",
-            )
 
-    def add_cache_impact_parameters(self, k: str, v):
-        self.cache.add_params(k, v)
-
-    def translate(self, text, ignore_cache=False, rate_limit_params: dict = None):
+    def translate(self, text, rate_limit_params: dict = None):
         self.translate_call_count += 1
-        if not (self.ignore_cache or ignore_cache):
-            try:
-                cache = self.cache.get(text)
-                if cache is not None:
-                    self.translate_cache_call_count += 1
-                    return cache
-            except Exception as e:
-                logger.debug(f"try get cache failed, ignore it: {e}")
         _translate_rate_limiter.wait()
-        translation = self.do_translate(text, rate_limit_params)
-        if not (self.ignore_cache or ignore_cache):
-            self.cache.set(text, translation)
-        return translation
+        return self.do_translate(text, rate_limit_params)
 
-    def llm_translate(self, text, ignore_cache=False, rate_limit_params: dict = None):
+    def llm_translate(self, text, rate_limit_params: dict = None):
         self.translate_call_count += 1
-        if not (self.ignore_cache or ignore_cache):
-            try:
-                cache = self.cache.get(text)
-                if cache is not None:
-                    self.translate_cache_call_count += 1
-                    return cache
-            except Exception as e:
-                logger.debug(f"try get cache failed, ignore it: {e}")
         _translate_rate_limiter.wait()
-        translation = self.do_llm_translate(text, rate_limit_params)
-        if not (self.ignore_cache or ignore_cache):
-            try:
-                self.cache.set(text, translation)
-            except Exception as e:
-                logger.debug(
-                    f"try set cache failed, ignore it: {e}, text: {text}, translation: {translation}"
-                )
-        return translation
+        return self.do_llm_translate(text, rate_limit_params)
 
     @abstractmethod
     def do_llm_translate(self, text, rate_limit_params: dict = None):

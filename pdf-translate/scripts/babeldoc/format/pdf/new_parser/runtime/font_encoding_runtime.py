@@ -5,8 +5,8 @@ import re
 from collections.abc import Iterable
 from typing import cast
 
-from babeldoc.format.pdf.new_parser.runtime.data.glyphlist import glyphname2unicode
-from babeldoc.format.pdf.new_parser.runtime.data.latin_enc import ENCODING
+from babeldoc.pdfminer.glyphlist import glyphname2unicode
+from babeldoc.pdfminer.latin_enc import ENCODING
 from babeldoc.format.pdf.new_parser.runtime.exceptions_runtime import PDFKeyError
 from babeldoc.format.pdf.new_parser.runtime.ps_primitives_runtime import PSLiteral
 

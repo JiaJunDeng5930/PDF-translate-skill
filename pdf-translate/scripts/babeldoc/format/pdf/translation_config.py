@@ -8,8 +8,6 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from babeldoc.const import CACHE_FOLDER
-from babeldoc.format.pdf.split_manager import BaseSplitStrategy
-from babeldoc.format.pdf.split_manager import PageCountStrategy
 from babeldoc.glossary import Glossary
 from babeldoc.glossary import GlossaryEntry
 from babeldoc.progress_monitor import ProgressMonitor
@@ -151,21 +149,13 @@ class SharedContextCrossSplitPart:
 
 
 class TranslationConfig:
-    @staticmethod
-    def create_max_pages_per_part_split_strategy(max_pages_per_part: int):
-        return PageCountStrategy(max_pages_per_part)
-
-    # for backward compatibility,
-    # new parameters should be added at the end of the function.
     def __init__(
         self,
         translator: BaseTranslator,
         input_file: str | Path,
         lang_in: str,
         lang_out: str,
-        doc_layout_model,  # DocLayoutModel
-        # for backward compatibility
-        font: str | Path | None = None,
+        doc_layout_model,
         pages: str | None = None,
         output_dir: str | Path | None = None,
         debug: bool = False,
@@ -189,8 +179,6 @@ class TranslationConfig:
         use_alternating_pages_dual: bool = False,
         watermark_output_mode: WatermarkOutputMode = WatermarkOutputMode.Watermarked,
         # Add split-related parameters
-        split_strategy: BaseSplitStrategy | None = None,
-        table_model=None,
         show_char_box: bool = False,
         skip_scanned_detection: bool = False,
         ocr_workaround: bool = False,
@@ -225,8 +213,6 @@ class TranslationConfig:
         self.input_file = input_file
         self.lang_in = lang_in
         self.lang_out = lang_out
-        # just ignore font
-        self.font = None
 
         self.pages = pages
         self.page_ranges = self.parse_pages(pages) if pages else None
@@ -306,9 +292,9 @@ class TranslationConfig:
         Path(output_dir).mkdir(parents=True, exist_ok=True)
 
         if not doc_layout_model:
-            from babeldoc.docvision.doclayout import DocLayoutModel
+            from babeldoc.docvision.doclayout import OnnxModel
 
-            doc_layout_model = DocLayoutModel.load_available()
+            doc_layout_model = OnnxModel.load_available()
         self.doc_layout_model = doc_layout_model
 
         self.shared_context_cross_split_part = SharedContextCrossSplitPart()
@@ -316,14 +302,6 @@ class TranslationConfig:
             initial_user_glossaries
         )
 
-        # Initialize split-related attributes
-        self.split_strategy = split_strategy
-
-        # Create a unique working directory for each part
-        self._part_working_dirs: dict[int, Path] = {}
-        self._part_output_dirs: dict[int, Path] = {}
-
-        self.table_model = table_model
         self.show_char_box = show_char_box
         self.custom_system_prompt = custom_system_prompt
         self.add_formula_placehold_hint = add_formula_placehold_hint
@@ -423,46 +401,8 @@ class TranslationConfig:
     def get_working_file_path(self, filename: str) -> Path:
         return Path(self.working_dir) / filename
 
-    def get_part_working_dir(self, part_index: int) -> Path:
-        """Get working directory for a specific part"""
-        if part_index not in self._part_working_dirs:
-            if self.working_dir:
-                part_dir = Path(self.working_dir) / f"part_{part_index}"
-            else:
-                part_dir = Path(tempfile.mkdtemp()) / f"part_{part_index}"
-            part_dir.mkdir(parents=True, exist_ok=True)
-            self._part_working_dirs[part_index] = part_dir
-        return self._part_working_dirs[part_index]
-
-    def get_part_output_dir(self, part_index: int) -> Path:
-        """Get output directory for a specific part"""
-        if part_index not in self._part_output_dirs:
-            part_dir = Path(self.working_dir) / f"part_{part_index}_output"
-            part_dir.mkdir(parents=True, exist_ok=True)
-            self._part_output_dirs[part_index] = part_dir
-        return self._part_output_dirs[part_index]
-
-    def cleanup_part_output_dir(self, part_index: int):
-        """Clean up output directory for a specific part"""
-        if part_index in self._part_output_dirs:
-            part_dir = self._part_output_dirs[part_index]
-            if part_dir.exists():
-                shutil.rmtree(part_dir)
-            del self._part_output_dirs[part_index]
-
-    def cleanup_part_working_dir(self, part_index: int):
-        """Clean up working directory for a specific part"""
-        if part_index in self._part_working_dirs:
-            part_dir = self._part_working_dirs[part_index]
-            if part_dir.exists():
-                shutil.rmtree(part_dir, ignore_errors=True)
-            del self._part_working_dirs[part_index]
-
     def cleanup_temp_files(self):
-        """Clean up all temporary files including part working directories"""
         try:
-            for part_index in list(self._part_working_dirs.keys()):
-                self.cleanup_part_working_dir(part_index)
             if self._is_temp_dir:
                 logger.info(f"cleanup temp files: {self.working_dir}")
                 shutil.rmtree(self.working_dir, ignore_errors=True)

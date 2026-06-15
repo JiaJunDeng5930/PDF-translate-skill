@@ -2,8 +2,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from dataclasses import field
-from typing import Protocol
 
+from babeldoc.format.pdf.new_parser.active_direct_font_backend import (
+    construct_active_direct_runtime_font,
+)
 from babeldoc.format.pdf.new_parser.active_object_projection import project_font_spec
 from babeldoc.format.pdf.new_parser.font_types import PdfRuntimeFontLike
 from babeldoc.format.pdf.new_parser.prepared_page import PreparedFontSpec
@@ -59,17 +61,8 @@ class ActiveFontAdapter:
         return getattr(self.backend, name)
 
 
-class RuntimeFontFactory(Protocol):
-    def create_font(
-        self,
-        objid: int | None,
-        runtime_spec: dict[object, object],
-    ) -> PdfRuntimeFontLike: ...
-
-
 def resolve_active_font_map(
     font_specs: tuple[PreparedFontSpec, ...],
-    font_factory: RuntimeFontFactory,
     legacy_descents: dict[object, float],
     runtime_cache: dict[object, object],
 ):
@@ -84,7 +77,13 @@ def resolve_active_font_map(
                 font_spec.spec,
                 resolve_indirect=font_spec.resolve_indirect,
             )
-            backend = font_factory.create_font(font_spec.objid, runtime_spec)
+            backend = construct_active_direct_runtime_font(runtime_spec)
+            if backend is None:
+                msg = (
+                    "Unsupported active runtime font subtype: "
+                    f"{runtime_spec.get('Subtype')!r}"
+                )
+                raise NotImplementedError(msg)
             if cache_key is not None:
                 runtime_cache[cache_key] = backend
         descent_root = font_spec.objid if font_spec.objid is not None else id(backend)
@@ -103,14 +102,12 @@ def resolve_active_font_map(
 
 @dataclass(slots=True)
 class ActiveFontResolver:
-    font_factory: RuntimeFontFactory
     legacy_descents: dict[object, float] = field(default_factory=dict)
     runtime_cache: dict[object, object] = field(default_factory=dict)
 
     def resolve_font_map(self, font_specs: tuple[PreparedFontSpec, ...]):
         return resolve_active_font_map(
             font_specs,
-            self.font_factory,
             self.legacy_descents,
             self.runtime_cache,
         )

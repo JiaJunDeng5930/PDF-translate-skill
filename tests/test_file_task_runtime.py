@@ -80,7 +80,7 @@ table_model: unsupported
         self.assertIn("output_mode must be one of", message)
         self.assertIn("watermark_output_mode must be one of", message)
         self.assertIn("primary_font_family must be", message)
-        self.assertIn("table_model must be null or rapidocr", message)
+        self.assertIn("table_model is not a translation setting", message)
 
     def test_config_maps_language_output_and_watermark_to_babeldoc_params(self) -> None:
         from babeldoc.format.pdf.translation_config import WatermarkOutputMode
@@ -101,7 +101,6 @@ watermark_output_mode: both
 auto_extract_glossary: false
 primary_font_family: serif
 add_formula_placehold_hint: false
-table_model: rapidocr
 """.strip()
             + "\n",
         )
@@ -114,7 +113,7 @@ table_model: rapidocr
         }
         translator = FileTaskTranslator(paths_for(self.tmp), state)
         with patch(
-            "babeldoc.docvision.doclayout.DocLayoutModel.load_available",
+            "babeldoc.docvision.doclayout.OnnxModel.load_available",
             return_value=object(),
         ):
             config = _build_translation_config(paths_for(self.tmp), state, translator)
@@ -131,7 +130,6 @@ table_model: rapidocr
         self.assertFalse(config.auto_extract_glossary)
         self.assertEqual(config.primary_font_family, "serif")
         self.assertFalse(config.add_formula_placehold_hint)
-        self.assertEqual(config.table_model.__class__.__name__, "RapidOCRModel")
 
     def test_initialized_state_keeps_runtime_sources_single_owned(self) -> None:
         from file_task_pdf_translate.config import load_workspace_config
@@ -436,7 +434,7 @@ class PagePlanRegressionTests(unittest.TestCase):
         translator = FileTaskTranslator(paths, state)
 
         with patch(
-            "babeldoc.docvision.doclayout.DocLayoutModel.load_available",
+            "babeldoc.docvision.doclayout.OnnxModel.load_available",
             return_value=object(),
         ):
             config = _build_translation_config(paths, state, translator)

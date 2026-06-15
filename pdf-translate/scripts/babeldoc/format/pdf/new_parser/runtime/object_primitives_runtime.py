@@ -10,7 +10,7 @@ from babeldoc.format.pdf.new_parser.runtime.ps_primitives_runtime import LIT
 from babeldoc.format.pdf.new_parser.runtime.ps_primitives_runtime import (
     literal_name as _literal_name,
 )
-from babeldoc.format.pdf.new_parser.runtime.runtime_settings import STRICT
+from babeldoc.pdfminer.settings import STRICT
 
 LITERAL_FONT = LIT("Font")
 

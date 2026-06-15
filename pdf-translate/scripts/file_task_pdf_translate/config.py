@@ -17,7 +17,6 @@ CONFIG_FILE_NAME = "pdf_translate.yaml"
 OUTPUT_MODES = {"mono", "dual", "both"}
 WATERMARK_MODE_NAMES = {"watermarked", "no_watermark", "both"}
 PRIMARY_FONT_FAMILIES = {None, "serif", "sans-serif", "script"}
-TABLE_MODELS = {None, "rapidocr"}
 
 
 class ConfigError(RuntimeError):
@@ -85,6 +84,8 @@ def _normalize_config(root: Path, data: dict) -> dict:
     errors: list[str] = []
     if "version" in data:
         errors.append("version is not a translation setting; remove version")
+    if "table_model" in data:
+        errors.append("table_model is not a translation setting; remove table_model")
 
     input_pdf = data.get("input_pdf")
     if not input_pdf:
@@ -138,10 +139,6 @@ def _normalize_config(root: Path, data: dict) -> dict:
     if not isinstance(add_formula_placehold_hint, bool):
         errors.append("add_formula_placehold_hint must be true or false")
 
-    table_model = data.get("table_model")
-    if table_model not in TABLE_MODELS:
-        errors.append("table_model must be null or rapidocr")
-
     if errors:
         raise ConfigError("; ".join(errors))
 
@@ -156,7 +153,6 @@ def _normalize_config(root: Path, data: dict) -> dict:
         "auto_extract_glossary": auto_extract_glossary,
         "primary_font_family": primary_font_family,
         "add_formula_placehold_hint": add_formula_placehold_hint,
-        "table_model": table_model,
     }
     snapshot["config_hash"] = _stable_hash(snapshot)
     return snapshot

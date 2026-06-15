@@ -8,7 +8,7 @@ from typing import cast
 import freetype
 
 from babeldoc.format.pdf.new_parser.runtime.cmap_types_runtime import FileUnicodeMap
-from babeldoc.format.pdf.new_parser.runtime.data.fontmetrics import FONT_METRICS
+from babeldoc.pdfminer.fontmetrics import FONT_METRICS
 from babeldoc.format.pdf.new_parser.runtime.exceptions_runtime import PDFException
 from babeldoc.format.pdf.new_parser.runtime.font_encoding_runtime import name2unicode
 from babeldoc.format.pdf.new_parser.runtime.ps_primitives_runtime import PSLiteral

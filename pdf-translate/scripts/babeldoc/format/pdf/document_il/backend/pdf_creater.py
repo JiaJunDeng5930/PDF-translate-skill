@@ -658,10 +658,9 @@ class PDFCreater:
         document: il_version_1.Document,
         translation_config: TranslationConfig,
         mediabox_data: dict,
-    ):
+        ):
         self.original_pdf_path = original_pdf_path
         self.docs = document
-        self.font_path = translation_config.font
         self.font_mapper = FontMapper(translation_config)
         self.translation_config = translation_config
         self.mediabox_data = mediabox_data

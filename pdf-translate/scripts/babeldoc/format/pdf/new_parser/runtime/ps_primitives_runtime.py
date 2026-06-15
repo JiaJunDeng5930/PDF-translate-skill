@@ -5,7 +5,7 @@ from typing import Generic
 from typing import TypeVar
 
 from babeldoc.format.pdf.new_parser.runtime.exceptions_runtime import PSTypeError
-from babeldoc.format.pdf.new_parser.runtime.runtime_settings import STRICT
+from babeldoc.pdfminer.settings import STRICT
 
 
 class PSObject:

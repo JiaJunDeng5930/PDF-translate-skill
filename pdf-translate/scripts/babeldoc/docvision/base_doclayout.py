@@ -1,14 +1,3 @@
-import abc
-import logging
-from collections.abc import Generator
-
-import pymupdf
-
-from babeldoc.format.pdf.document_il.il_version_1 import Page
-
-logger = logging.getLogger(__name__)
-
-
 class YoloResult:
     """Helper class to store detection results from ONNX model."""
 
@@ -35,34 +24,3 @@ class YoloBox:
         self.xyxy = xyxy
         self.conf = conf
         self.cls = cls
-
-
-class DocLayoutModel(abc.ABC):
-    @staticmethod
-    def load_onnx():
-        logger.info("Loading ONNX model...")
-        from babeldoc.docvision.doclayout import OnnxModel
-
-        model = OnnxModel.from_pretrained()
-        return model
-
-    @staticmethod
-    def load_available():
-        return DocLayoutModel.load_onnx()
-
-    @property
-    @abc.abstractmethod
-    def stride(self) -> int:
-        """Stride of the model input."""
-
-    @abc.abstractmethod
-    def handle_document(
-        self,
-        pages: list[Page],
-        mupdf_doc: pymupdf.Document,
-        translate_config,
-        save_debug_image,
-    ) -> Generator[tuple[Page, YoloResult], None, None]:
-        """
-        Handle a document.
-        """

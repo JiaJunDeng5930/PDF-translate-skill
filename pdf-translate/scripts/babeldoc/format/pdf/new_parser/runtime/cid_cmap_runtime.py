@@ -8,7 +8,7 @@ from babeldoc.format.pdf.new_parser.runtime.cmap_types_runtime import IdentityCM
 from babeldoc.format.pdf.new_parser.runtime.cmap_types_runtime import IdentityCMapByte
 from babeldoc.format.pdf.new_parser.runtime.cmap_types_runtime import IdentityUnicodeMap
 from babeldoc.format.pdf.new_parser.runtime.cmapdb_runtime import CMapDB
-from babeldoc.format.pdf.new_parser.runtime.runtime_settings import STRICT
+from babeldoc.pdfminer.settings import STRICT
 from babeldoc.format.pdf.new_parser.runtime.to_unicode_parser_runtime import (
     parse_tounicode_stream,
 )

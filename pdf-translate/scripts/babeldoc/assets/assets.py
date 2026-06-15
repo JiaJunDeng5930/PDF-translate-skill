@@ -357,21 +357,8 @@ async def get_doclayout_onnx_model_path_async(client: httpx.AsyncClient | None =
     return onnx_path
 
 
-async def get_table_detection_rapidocr_model_path_async(
-    client: httpx.AsyncClient | None = None,
-):
-    _ = client
-    dummy_path = get_cache_file_path("rapidocr-retired-dummy.txt", "models")
-    dummy_path.write_text("RapidOCR table detection is retired.\n", encoding="utf-8")
-    return dummy_path
-
-
 def get_doclayout_onnx_model_path():
     return run_coro(get_doclayout_onnx_model_path_async())
-
-
-def get_table_detection_rapidocr_model_path():
-    return run_coro(get_table_detection_rapidocr_model_path_async())
 
 
 def get_font_url_by_name_and_upstream(font_file_name: str, upstream: str):

@@ -30,7 +30,7 @@ class FileTaskTranslator(BaseTranslator):
 
     def __init__(self, paths: WorkspacePaths, state: dict):
         config = state["config"]
-        super().__init__(config["lang_in"], config["lang_out"], ignore_cache=True)
+        super().__init__(config["lang_in"], config["lang_out"])
         self.paths = paths
         self.state = state
         self.model = "current_translation"

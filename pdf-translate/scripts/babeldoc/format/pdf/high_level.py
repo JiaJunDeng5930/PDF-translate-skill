@@ -46,12 +46,9 @@ from babeldoc.format.pdf.document_il.midend.il_translator_llm_only import (
 from babeldoc.format.pdf.document_il.midend.layout_parser import LayoutParser
 from babeldoc.format.pdf.document_il.midend.paragraph_finder import ParagraphFinder
 from babeldoc.format.pdf.document_il.midend.styles_and_formulas import StylesAndFormulas
-from babeldoc.format.pdf.document_il.midend.table_parser import TableParser
 from babeldoc.format.pdf.document_il.midend.typesetting import Typesetting
 from babeldoc.format.pdf.document_il.utils.fontmap import FontMapper
 from babeldoc.format.pdf.document_il.json_converter import ILJsonConverter
-from babeldoc.format.pdf.result_merger import ResultMerger
-from babeldoc.format.pdf.split_manager import SplitManager
 from babeldoc.format.pdf.translation_config import TranslateResult
 from babeldoc.format.pdf.translation_config import TranslationConfig
 from babeldoc.format.pdf.translation_config import WatermarkOutputMode
@@ -65,7 +62,6 @@ TRANSLATE_STAGES = [
     ("Parse PDF and Create Intermediate Representation", 14.12),
     (DetectScannedFile.stage_name, 2.45),  # DetectScannedFile
     (LayoutParser.stage_name, 14.03),  # Parse Page Layout
-    (TableParser.stage_name, 1.0),  # Parse Table
     (ParagraphFinder.stage_name, 6.26),  # Parse Paragraphs
     (StylesAndFormulas.stage_name, 1.66),  # Parse Formulas and Styles
     (AutomaticTermExtractor.stage_name, 30.0),  # Extract Terms
@@ -281,7 +277,6 @@ def get_translation_stage(
             [
                 DetectScannedFile.stage_name,
                 LayoutParser.stage_name,
-                TableParser.stage_name,
                 ParagraphFinder.stage_name,
                 StylesAndFormulas.stage_name,
                 AutomaticTermExtractor.stage_name,
@@ -291,8 +286,6 @@ def get_translation_stage(
         )
     else:
         # Original logic for selective removal
-        if not translation_config.table_model:
-            should_remove.append(TableParser.stage_name)
         if translation_config.skip_scanned_detection:
             should_remove.append(DetectScannedFile.stage_name)
         if not translation_config.auto_extract_glossary:
@@ -469,132 +462,7 @@ def do_translate(
         start_time = time.time()
         peak_memory_usage = 0
         with MemoryMonitor() as memory_monitor:
-            # Check if split translation is enabled
-            if not translation_config.split_strategy:
-                result = _do_translate_single(pm, translation_config)
-            else:
-                # Initialize split manager and determine split points
-                split_manager = SplitManager(translation_config)
-                split_points = split_manager.determine_split_points(translation_config)
-
-                if not split_points:
-                    logger.warning(
-                        "No split points determined, falling back to single translation"
-                    )
-                    result = _do_translate_single(pm, translation_config)
-                else:
-                    logger.info(f"Split points determined: {len(split_points)} parts")
-
-                    if len(split_points) == 1:
-                        logger.info("Only one part, use single translation")
-                        result = _do_translate_single(pm, translation_config)
-                    else:
-                        pm.total_parts = len(split_points)
-
-                        # Process parts serially
-                        results: dict[int, TranslateResult | None] = {}
-                        original_watermark_mode = (
-                            translation_config.watermark_output_mode
-                        )
-                        original_doc = Document(original_pdf_path)
-                        for i, split_point in enumerate(split_points):
-                            try:
-                                # Create a copy of config for this part
-                                part_config = copy.copy(translation_config)
-                                part_config.skip_clean = True
-                                should_translate_pages = []
-                                for page in range(
-                                    split_point.start_page, split_point.end_page + 1
-                                ):
-                                    if translation_config.should_translate_page(
-                                        page + 1
-                                    ):
-                                        should_translate_pages.append(
-                                            page - split_point.start_page + 1
-                                        )
-                                part_config.pages = None
-                                part_config.page_ranges = [
-                                    (x, x) for x in should_translate_pages
-                                ]
-                                if (
-                                    translation_config.only_include_translated_page
-                                    and not should_translate_pages
-                                ):
-                                    results[i] = None
-                                    continue
-
-                                # Only first part should do scanned detection if enabled
-                                if i > 0:
-                                    part_config.skip_scanned_detection = True
-
-                                part_config.working_dir = (
-                                    translation_config.get_part_working_dir(i)
-                                )
-                                part_config.output_dir = (
-                                    translation_config.get_part_output_dir(i)
-                                )
-
-                                assert id(
-                                    part_config.shared_context_cross_split_part
-                                ) == id(
-                                    translation_config.shared_context_cross_split_part
-                                ), "shared_context_cross_split_part must be the same"
-
-                                part_temp_input_path = (
-                                    part_config.get_working_file_path(
-                                        f"input.part{i}.pdf"
-                                    )
-                                )
-                                part_config.input_file = part_temp_input_path
-
-                                temp_doc = Document()
-                                temp_doc.insert_pdf(
-                                    original_doc,
-                                    from_page=split_point.start_page,
-                                    to_page=split_point.end_page,
-                                )
-                                safe_save(temp_doc, part_temp_input_path)
-                                assert (
-                                    temp_doc.page_count
-                                    == split_point.end_page - split_point.start_page + 1
-                                )
-
-                                # Only first part should have watermark
-                                if i > 0:
-                                    part_config.watermark_output_mode = (
-                                        WatermarkOutputMode.NoWatermark
-                                    )
-
-                                # Create progress monitor for this part
-                                part_monitor = pm.create_part_monitor(
-                                    i, len(split_points)
-                                )
-
-                                # Process this part
-                                result = _do_translate_single(
-                                    part_monitor,
-                                    part_config,
-                                )
-                                results[i] = result
-
-                            except Exception as e:
-                                logger.error(f"Error in part {i}: {e}")
-                                pm.translate_error(e)
-                                raise
-                            finally:
-                                # Clean up part working directory
-                                translation_config.cleanup_part_working_dir(i)
-
-                        # Restore original watermark mode
-                        translation_config.watermark_output_mode = (
-                            original_watermark_mode
-                        )
-
-                        # Merge results
-                        merger = ResultMerger(translation_config)
-                        logger.info("start merge results")
-                        result = merger.merge_results(results)
-                        logger.info("finish merge results")
+            result = _do_translate_single(pm, translation_config)
             peak_memory_usage = memory_monitor.peak_memory_usage
 
         finish_time = time.time()
@@ -868,14 +736,6 @@ def _do_translate_single(
             translation_config.get_working_file_path("layout_generator.json"),
         )
 
-    if translation_config.table_model:
-        docs = TableParser(translation_config).process(docs, doc_pdf2zh)
-        logger.debug("finish table parser")
-        if translation_config.debug:
-            json_converter.write_json(
-                docs,
-                translation_config.get_working_file_path("table_parser.json"),
-            )
     ParagraphFinder(translation_config).process(docs)
     logger.debug(f"finish paragraph finder from {temp_pdf_path}")
     if translation_config.debug:

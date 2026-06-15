@@ -41,7 +41,6 @@ def build_parse_only_config(
         progress_monitor=ProgressMonitor([(PARSE_PDF_STAGE_NAME, 1.0)]),
         auto_extract_glossary=False,
         skip_translation=True,
-        table_model=None,
     )
 
 
