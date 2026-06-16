@@ -1,3 +1,11 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2024 funstory.ai limited
+# Copyright (C) 2026 JiajunDeng
+#
+# Derived from BabelDOC commit 980fd2821d54cbabd270349fe509e8177c35e4c3.
+# Modified on 2026-06-16 to keep rich-text placeholders in file-backed
+# translation tasks even for formula-heavy paragraphs.
+
 from __future__ import annotations
 
 import json
@@ -722,7 +730,11 @@ class ILTranslator:
                 return None
 
             # 如果占位符数量超过阈值，且未禁用富文本翻译，则递归调用并禁用富文本翻译
-            if len(placeholders) > 40 and not disable_rich_text_translate:
+            if (
+                len(placeholders) > 40
+                and not disable_rich_text_translate
+                and not is_file_task_workflow(self.translation_config)
+            ):
                 logger.warning(
                     f"Too many placeholders ({len(placeholders)}) in paragraph[{paragraph.debug_id}], "
                     "disabling rich text translation for this paragraph",

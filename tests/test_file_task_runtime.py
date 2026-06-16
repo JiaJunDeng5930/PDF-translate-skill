@@ -338,6 +338,46 @@ class DependencySpecificationRegressionTests(unittest.TestCase):
         self.assertIn("download_assets.py prepares runtime assets", readme)
 
 
+class FontMappingRegressionTests(unittest.TestCase):
+    def test_math_symbol_is_routed_to_symbol_font_pool(self) -> None:
+        from babeldoc.format.pdf.document_il.utils.fontmap import _is_symbol_or_math
+
+        self.assertTrue(_is_symbol_or_math("∼"))
+        self.assertFalse(_is_symbol_or_math("A"))
+
+
+class RenderCompareRegressionTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp(prefix="pdf-translate-render-compare-"))
+        self.addCleanup(lambda: shutil.rmtree(self.tmp, ignore_errors=True))
+
+    def test_compare_renders_reports_numeric_page_numbers(self) -> None:
+        import importlib.util
+
+        script = REPO_ROOT / "pdf-translate" / "scripts" / "compare_renders.py"
+        spec = importlib.util.spec_from_file_location("compare_renders", script)
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+
+        source = self.tmp / "source"
+        target = self.tmp / "target"
+        source.mkdir()
+        target.mkdir()
+        for page in range(1, 34):
+            payload = b"same"
+            if page == 3:
+                (source / f"page-{page}.png").write_bytes(payload)
+                (target / f"page-{page}.png").write_bytes(b"changed")
+            else:
+                (source / f"page-{page}.png").write_bytes(payload)
+                (target / f"page-{page}.png").write_bytes(payload)
+
+        result = module.compare_renders(source, target)
+
+        self.assertEqual(result["changed_pages"], [3])
+
+
 class OutputSelectionTests(unittest.TestCase):
     def test_output_pdfs_exposes_every_generated_variant_and_primary_path(self) -> None:
         from file_task_pdf_translate.runner import _collect_output_pdfs
@@ -663,10 +703,10 @@ add_formula_placehold_hint: true
         progress = read_json(paths.progress, None)
         self.assertEqual(progress["page_plan"]["active_page"], 2)
         self.assertEqual(progress["page_progress"]["completed_count"], 1)
-        self.assertEqual(progress["page_progress"]["overall_progress"], 50.0)
+        self.assertEqual(progress["page_progress"]["overall_progress"], 33.33)
         self.assertEqual(progress["stage_total"], 1)
         self.assertEqual(progress["shard_stage_total"], 1)
-        self.assertEqual(progress["workflow_progress"], 50.0)
+        self.assertEqual(progress["workflow_progress"], 33.33)
 
     def test_progress_response_does_not_reannotate_page_snapshot(self) -> None:
         from file_task_pdf_translate.runner import _progress
@@ -703,15 +743,15 @@ add_formula_placehold_hint: true
 
         progress = _progress(paths, state)
 
-        self.assertEqual(progress["page_progress"]["active_page_progress"], 50.0)
-        self.assertEqual(progress["page_progress"]["overall_progress"], 50.0)
+        self.assertEqual(progress["page_progress"]["active_page_progress"], 0.0)
+        self.assertEqual(progress["page_progress"]["overall_progress"], 33.33)
         self.assertEqual(
             progress["pipeline_progress"]["page_progress"]["active_page_progress"],
-            50.0,
+            0.0,
         )
         self.assertEqual(progress["pipeline_progress"]["shard_stage_total"], 2)
         self.assertEqual(progress["pipeline_progress"]["stage_total"], 2)
-        self.assertEqual(progress["pipeline_progress"]["workflow_progress"], 50.0)
+        self.assertEqual(progress["pipeline_progress"]["workflow_progress"], 33.33)
 
     def test_single_target_page_progress_reports_one_page_total(self) -> None:
         from file_task_pdf_translate.runner import _record_pipeline_progress
@@ -753,7 +793,7 @@ add_formula_placehold_hint: true
         self.assertEqual(progress["stage_total"], 33)
         self.assertEqual(progress["shard_stage_total"], 33)
         self.assertEqual(progress["page_progress"]["target_total"], 1)
-        self.assertEqual(progress["workflow_progress"], 39.0)
+        self.assertEqual(progress["workflow_progress"], 0.0)
 
     def test_pending_progress_uses_accepted_over_current_task(self) -> None:
         from file_task_pdf_translate.runner import _progress
@@ -799,9 +839,9 @@ add_formula_placehold_hint: true
         progress = _progress(paths, state)
 
         self.assertEqual(progress["pipeline_progress"]["stage_progress"], 100.0)
-        self.assertEqual(progress["pipeline_progress"]["workflow_progress"], 50.0)
-        self.assertEqual(progress["page_progress"]["workflow_current"], 1)
-        self.assertEqual(progress["page_progress"]["workflow_total"], 2)
+        self.assertEqual(progress["pipeline_progress"]["workflow_progress"], 0.0)
+        self.assertEqual(progress["page_progress"]["workflow_current"], 0)
+        self.assertEqual(progress["page_progress"]["workflow_total"], 1)
 
 
 class EditableParserRegressionTests(unittest.TestCase):
@@ -829,6 +869,29 @@ class EditableParserRegressionTests(unittest.TestCase):
         self.assertEqual([block.translation for block in document.items], ["", ""])
         self.assertNotIn("[[", text)
         self.assertNotIn("⟦", text)
+
+    def test_rendered_editable_items_can_include_readonly_context(self) -> None:
+        from file_task_pdf_translate.editable import EditableBlock
+        from file_task_pdf_translate.editable import parse_editable_document
+        from file_task_pdf_translate.editable import render_editable_document
+
+        text = render_editable_document(
+            "translate",
+            [
+                EditableBlock(
+                    source="els [5]",
+                    context_before="fast T2I models",
+                    text_role="protected",
+                )
+            ],
+            "zh-CN",
+        )
+
+        self.assertIn("context_before: fast T2I models", text)
+        self.assertIn("text_role: protected", text)
+        document, errors = parse_editable_document(text)
+        self.assertEqual(errors, [])
+        self.assertIsNotNone(document)
 
     def test_term_yaml_uses_structured_pairs(self) -> None:
         from file_task_pdf_translate.editable import parse_editable_document
@@ -999,15 +1062,31 @@ items:
             return chars
 
         normalized = normalize_extracted_pdf_text(
-            "re-\nsulting text-\nguided text-to-\nimage",
+            "re-\nsulting text-\nguided text-to-\nimage Training-\nfree PIE-\nbench T-\nfree",
             {
-                "chars": chars_for("re-\nsulting text-\nguided text-to-\nimage"),
+                "chars": chars_for(
+                    "re-\nsulting text-\nguided text-to-\nimage Training-\nfree PIE-\nbench T-\nfree"
+                ),
             },
         )
 
         self.assertIn("resulting", normalized)
         self.assertIn("text-guided", normalized)
         self.assertIn("text-to-image", normalized)
+        self.assertIn("Training-free", normalized)
+        self.assertIn("PIE-bench", normalized)
+        self.assertIn("T-free", normalized)
+
+    def test_geometry_context_repairs_citation_spacing(self) -> None:
+        from file_task_pdf_translate.editable import normalize_extracted_pdf_text
+
+        normalized = normalize_extracted_pdf_text(
+            "inversion [81 1, 15] and PIEbench [1 1]",
+            {"chars": [{"text": char, "bbox": [i * 5.0, 0.0, i * 5.0 + 4.0, 8.0]} for i, char in enumerate("inversion [81 1, 15] and PIEbench [1 1]")]},
+        )
+
+        self.assertIn("[8-11, 15]", normalized)
+        self.assertIn("PIE-bench [11]", normalized)
 
     def test_placeholder_author_boundaries_are_spaced_before_editable_tasks(self) -> None:
         from file_task_pdf_translate.editable import normalize_extracted_pdf_text
@@ -1056,6 +1135,11 @@ items:
                 "figure_caption",
             ),
             "caption",
+        )
+        self.assertEqual(classify_text_role("?", "plain text"), "table_marker")
+        self.assertEqual(
+            classify_text_role("Direct Inversion + MasaCtrl [3, 1 1]", "plain text"),
+            "protected",
         )
         self.assertFalse(is_figure_label_candidate("ChordEdit"))
         self.assertFalse(
@@ -1171,6 +1255,60 @@ items:
         )
 
         extractor.process_page(page, executor, pbar)
+
+        pbar.advance.assert_called_once_with(1)
+        executor.submit.assert_not_called()
+
+    def test_protected_table_cells_skip_term_extraction(self) -> None:
+        from babeldoc.format.pdf.document_il.il_version_1 import Box
+        from babeldoc.format.pdf.document_il.il_version_1 import Page
+        from babeldoc.format.pdf.document_il.il_version_1 import PdfCharacter
+        from babeldoc.format.pdf.document_il.il_version_1 import PdfLine
+        from babeldoc.format.pdf.document_il.il_version_1 import PdfParagraph
+        from babeldoc.format.pdf.document_il.il_version_1 import PdfParagraphComposition
+        from babeldoc.format.pdf.document_il.il_version_1 import PdfStyle
+        from babeldoc.format.pdf.document_il.il_version_1 import VisualBbox
+        from babeldoc.format.pdf.document_il.midend.automatic_term_extractor import (
+            AutomaticTermExtractor,
+        )
+
+        text = "Direct Inversion + MasaCtrl [3, 1 1]"
+        style = PdfStyle(font_id="f1", font_size=10)
+        chars = []
+        for index, char in enumerate(text):
+            box = Box(index * 5, 0, index * 5 + 4, 8)
+            chars.append(
+                PdfCharacter(
+                    pdf_style=style,
+                    box=box,
+                    visual_bbox=VisualBbox(box=box),
+                    char_unicode=char,
+                    xobj_id=1,
+                )
+            )
+        paragraph = PdfParagraph(
+            box=Box(0, 0, 180, 8),
+            pdf_style=style,
+            pdf_paragraph_composition=[
+                PdfParagraphComposition(
+                    pdf_line=PdfLine(box=Box(0, 0, 180, 8), pdf_character=chars)
+                )
+            ],
+            xobj_id=1,
+            unicode=text,
+            debug_id="table-1",
+            layout_label="plain text",
+            layout_id=3,
+        )
+        executor = SimpleNamespace(submit=Mock())
+        pbar = SimpleNamespace(advance=Mock())
+        extractor = object.__new__(AutomaticTermExtractor)
+        extractor.translation_config = SimpleNamespace(
+            file_task_workflow=True,
+            raise_if_cancelled=lambda: None,
+        )
+
+        extractor.process_page(Page(pdf_paragraph=[paragraph]), executor, pbar)
 
         pbar.advance.assert_called_once_with(1)
         executor.submit.assert_not_called()
@@ -1419,6 +1557,33 @@ class EditableYamlWorkflowTests(unittest.TestCase):
         )
 
         self.assertEqual(first["task_hash"], second["task_hash"])
+
+    def test_translation_task_keeps_previous_page_context_for_continuation(self) -> None:
+        from file_task_pdf_translate.state import ensure_dirs
+        from file_task_pdf_translate.state import paths_for
+        from file_task_pdf_translate.translator import FileTaskTranslator
+
+        paths = paths_for(self.tmp)
+        ensure_dirs(paths)
+        source_pdf = self.tmp / "paper.pdf"
+        write_test_pdf(source_pdf, ["fast T2I models", "els [5] continue"])
+        state = {
+            "config": {
+                "lang_in": "en",
+                "lang_out": "zh-CN",
+                "input_pdf": str(source_pdf),
+            },
+            "page_plan": {
+                "active_page": 2,
+            },
+            "pending_task_hash": None,
+            "status": "running",
+        }
+        translator = FileTaskTranslator(paths, state)
+
+        task = translator._translation_task_from_items([{"id": 0, "input": "els [5]"}])
+
+        self.assertIn("fast T2I models", task["blocks"][0]["context_before"])
 
     def test_translation_task_repairs_hyphenated_item_boundary(self) -> None:
         from file_task_pdf_translate.state import ensure_dirs

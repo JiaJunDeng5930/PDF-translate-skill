@@ -1,7 +1,16 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2024 funstory.ai limited
+# Copyright (C) 2026 JiajunDeng
+#
+# Derived from BabelDOC commit 980fd2821d54cbabd270349fe509e8177c35e4c3.
+# Modified on 2026-06-16 to route math and symbol characters through the
+# bundled font pool before reporting missing glyphs.
+
 import enum
 import functools
 import logging
 import re
+import unicodedata
 from pathlib import Path
 
 import pymupdf
@@ -205,6 +214,11 @@ class FontMapper:
             if font.has_glyph(current_char):
                 return font
 
+        if _is_symbol_or_math(char_unicode):
+            for font in self.fonts.values():
+                if font.has_glyph(current_char):
+                    return font
+
         logger.warning(
             f"Can't find font for {char_unicode}({current_char}). "
             f"Original font: {original_font.name}[{original_font.font_id}]. "
@@ -313,3 +327,12 @@ class FontMapper:
                 for xobj in page.pdf_xobject:
                     xobj.pdf_font.extend(pdf_fonts)
                 pbar.advance(1)
+
+
+def _is_symbol_or_math(char_unicode: str) -> bool:
+    if len(char_unicode) != 1:
+        return False
+    codepoint = ord(char_unicode)
+    return unicodedata.category(char_unicode).startswith("S") or (
+        0x2200 <= codepoint <= 0x22FF
+    )

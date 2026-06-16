@@ -7,6 +7,8 @@
 # pdf-translate skill task workflow.
 # Modified on 2026-06-15 to classify text roles before term extraction and
 # route figure labels into translation tasks.
+# Modified on 2026-06-16 to skip protected table cells and symbols in
+# file-backed term extraction tasks.
 
 from __future__ import annotations
 
@@ -264,15 +266,15 @@ class AutomaticTermExtractor:
                 pbar.advance(1)
                 continue
             context = paragraph_hygiene_context(paragraph, page)
-            if is_file_task_workflow(
-                self.translation_config
-            ) and classify_text_role(
-                paragraph.unicode,
-                getattr(paragraph, "layout_label", None),
-                context,
-            ) == "figure_label":
-                pbar.advance(1)
-                continue
+            if is_file_task_workflow(self.translation_config):
+                text_role = classify_text_role(
+                    paragraph.unicode,
+                    getattr(paragraph, "layout_label", None),
+                    context,
+                )
+                if text_role in {"figure_label", "protected", "table_marker"}:
+                    pbar.advance(1)
+                    continue
             # if len(paragraph.unicode) < self.translation_config.min_text_length:
             #     pbar.advance(1)
             #     continue

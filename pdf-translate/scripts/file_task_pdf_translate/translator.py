@@ -50,10 +50,7 @@ class FileTaskTranslator(BaseTranslator):
         if answer is not None:
             return json.dumps(answer, ensure_ascii=False)
 
-        blocks = [
-            EditableBlock(source=block["source"], translation="")
-            for block in task["blocks"]
-        ]
+        blocks = [_editable_block(block) for block in task["blocks"]]
         save_pending_task(self.paths, self.state, task, blocks)
         raise FileTaskPending(task["task_hash"])
 
@@ -64,10 +61,7 @@ class FileTaskTranslator(BaseTranslator):
             if isinstance(answer, list) and answer:
                 return answer[0].get("output", text)
             return text
-        blocks = [
-            EditableBlock(source=block["source"], translation="")
-            for block in task["blocks"]
-        ]
+        blocks = [_editable_block(block) for block in task["blocks"]]
         save_pending_task(self.paths, self.state, task, blocks)
         raise FileTaskPending(task["task_hash"])
 
@@ -92,10 +86,13 @@ class FileTaskTranslator(BaseTranslator):
     def _translation_task_from_items(self, items: list[dict]) -> dict:
         active_page = self._active_page()
         blocks = []
-        for item in items:
+        for index, item in enumerate(items):
             original_source = item.get("input", "")
             context = item.get("hygiene_context")
             display_source = normalize_extracted_pdf_text(original_source, context)
+            context_before = (
+                self._previous_page_context(display_source) if index == 0 else None
+            )
             blocks.append(
                 {
                     "source": display_source,
@@ -104,6 +101,7 @@ class FileTaskTranslator(BaseTranslator):
                     "layout_label": item.get("layout_label"),
                     "text_role": item.get("text_role"),
                     "hygiene_context": context,
+                    "context_before": context_before,
                 }
             )
         _repair_translation_block_boundaries(blocks)
@@ -132,13 +130,17 @@ class FileTaskTranslator(BaseTranslator):
         hygiene_blocks = normalize_text_blocks(
             [HygieneBlock(text=chunk) for chunk in chunks]
         )
-        for block in hygiene_blocks:
+        for index, block in enumerate(hygiene_blocks):
             display_source = block.text
+            context_before = (
+                self._previous_page_context(display_source) if index == 0 else None
+            )
             blocks.append(
                 {
                     "source": display_source,
                     "original_source": display_source,
                     "required_placeholders": placeholder_sequence(display_source),
+                    "context_before": context_before,
                 }
             )
         hash_payload = {
@@ -158,6 +160,26 @@ class FileTaskTranslator(BaseTranslator):
             "blocks": blocks,
         }
 
+    def _previous_page_context(self, source: str) -> str | None:
+        active_page = self._active_page()
+        if not active_page or active_page <= 1:
+            return None
+        stripped = source.lstrip()
+        if not stripped or not stripped[:1].islower():
+            return None
+        try:
+            import pymupdf
+
+            document = pymupdf.open(self.state["config"]["input_pdf"])
+            try:
+                previous_text = document[active_page - 2].get_text("text")
+            finally:
+                document.close()
+        except Exception:
+            return None
+        words = " ".join(previous_text.split())
+        return words[-360:] if words else None
+
 
 def _hashable_block(block: dict) -> dict:
     return {
@@ -165,6 +187,15 @@ def _hashable_block(block: dict) -> dict:
         for key, value in block.items()
         if key != "hygiene_context"
     }
+
+
+def _editable_block(block: dict) -> EditableBlock:
+    return EditableBlock(
+        source=block["source"],
+        translation="",
+        context_before=block.get("context_before"),
+        text_role=block.get("text_role"),
+    )
 
 
 def _repair_translation_block_boundaries(blocks: list[dict]) -> None:

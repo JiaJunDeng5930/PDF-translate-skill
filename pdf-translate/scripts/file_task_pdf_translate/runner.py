@@ -618,20 +618,10 @@ def _page_progress(
         active_fraction = 0.0
         workflow_current = completed_count
         workflow_total = len(target_pages)
-    elif state.get("status") in {"needs_ai_edit", "needs_ai_fix"} and has_pending:
-        accepted = max(0, int(accepted_tasks or 0))
-        active_fraction = accepted / (accepted + 1)
-        workflow_current = accepted
-        workflow_total = accepted + 1
     else:
-        stage_progress = 0.0
-        if pipeline_progress:
-            raw_stage_progress = pipeline_progress.get("stage_progress")
-            if isinstance(raw_stage_progress, (int, float)):
-                stage_progress = max(0.0, min(100.0, float(raw_stage_progress)))
-        active_fraction = stage_progress / 100.0 if active_page is not None else 0.0
-        workflow_current = None
-        workflow_total = None
+        active_fraction = 0.0
+        workflow_current = completed_count
+        workflow_total = len(target_pages)
 
     overall = ((completed_count + active_fraction) / len(target_pages)) * 100.0
     return {

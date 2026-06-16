@@ -28,6 +28,11 @@ GLUED_WORD_REPAIRS = (
     ("textprompts", "text prompts"),
     ("editingfield", "editing field"),
     ("thefield", "the field"),
+    ("PIEbench", "PIE-bench"),
+    ("Tfree", "T-free"),
+    ("Ifree", "I-free"),
+    ("Trainingfree", "Training-free"),
+    ("Inversionfree", "Inversion-free"),
 )
 FIGURE_LABEL_LAYOUTS = {
     "figure",
@@ -42,6 +47,13 @@ FIGURE_REGION_LAYOUTS = {
     "figure",
     "figure_text",
     "figure_text_hybrid",
+}
+TABLE_REGION_LAYOUTS = {
+    "table",
+    "table_body",
+    "table_cell",
+    "table_header",
+    "table_row",
 }
 CAPTION_LAYOUTS = {
     "caption",
@@ -96,6 +108,8 @@ def normalize_extracted_pdf_text(
     if not has_geometry:
         normalized = re.sub(r"(?<=\w)-\s+(?=\w)", "", normalized)
     normalized = _repair_glued_words(normalized)
+    normalized = _repair_citation_text(normalized)
+    normalized = _repair_section_numbers(normalized)
     normalized = _repair_placeholder_boundaries(normalized)
     normalized = re.sub(r",(?=\S)", ", ", normalized)
     normalized = re.sub(r"(?<=[A-Za-z])(?=\d+\s*(?:[,;\u2020*]|\s*[A-Z]))", " ", normalized)
@@ -184,6 +198,15 @@ def classify_text_role(
         return "affiliation"
     if label in CAPTION_LAYOUTS or _bbox_overlaps_layout(bbox, context, CAPTION_LAYOUTS):
         return "caption"
+    if _is_table_marker(compact):
+        return "table_marker"
+    if _is_table_cell_text(compact) or _is_protected_table_text(compact) or (
+        _bbox_overlaps_layout(bbox, context, TABLE_REGION_LAYOUTS)
+        and _is_table_cell_text(compact)
+    ):
+        return "protected"
+    if "->" in compact and _bbox_overlaps_layout(bbox, context, FIGURE_REGION_LAYOUTS):
+        return "figure_label"
     if not compact or compact.lower() in SECTION_HEADINGS:
         return None
     if len(compact) > 32:
@@ -218,6 +241,36 @@ def _repair_placeholder_boundaries(text: str) -> str:
     return text
 
 
+def _repair_citation_text(text: str) -> str:
+    def repair(match: re.Match[str]) -> str:
+        body = match.group(1)
+        if not re.fullmatch(r"[\d,\s-]+", body):
+            return match.group(0)
+        compact = re.sub(r"\s+", "", body)
+        parts = []
+        for part in compact.split(","):
+            if re.fullmatch(r"\d{3}", part):
+                parts.append(f"{part[0]}-{part[1:]}")
+            else:
+                parts.append(part)
+        return "[" + ", ".join(part for part in parts if part) + "]"
+
+    return re.sub(r"\[([^\]]+)\]", repair, text)
+
+
+def _repair_section_numbers(text: str) -> str:
+    text = re.sub(r"\b(\d+)\.\s+(\d+)\.", r"\1.\2.", text)
+    text = re.sub(r"\b(Section|Eq\.)\s*\(?(\d+)\.\s+(\d+)\)?", _repair_numbered_ref, text)
+    return text
+
+
+def _repair_numbered_ref(match: re.Match[str]) -> str:
+    label, major, minor = match.groups()
+    if label == "Eq.":
+        return f"{label} ({major}.{minor})"
+    return f"{label} {major}.{minor}"
+
+
 def _geometry_text(context: dict[str, Any] | None) -> str | None:
     chars = list((context or {}).get("chars") or [])
     if not chars:
@@ -250,7 +303,7 @@ def _geometry_text(context: dict[str, Any] | None) -> str | None:
         if previous is not None:
             if not _same_text_line(previous, char):
                 if str(previous.get("text") or "") == "-" and value[:1].islower():
-                    if not _preserve_line_break_hyphen(rebuilt):
+                    if not _preserve_line_break_hyphen(rebuilt, value):
                         rebuilt.pop()
                 else:
                     _append_space(rebuilt)
@@ -271,9 +324,15 @@ def _append_space(parts: list[str]) -> None:
         parts.append(" ")
 
 
-def _preserve_line_break_hyphen(parts: list[str]) -> bool:
+def _preserve_line_break_hyphen(parts: list[str], next_value: str = "") -> bool:
     tail = "".join(parts[-16:]).lower()
-    return tail.endswith(("text-to-", "text-", "real-"))
+    if tail.endswith(("text-to-", "text-", "real-", "pie-", "t-", "i-")):
+        return True
+    word_match = re.search(r"([a-z][a-z-]*)-$", tail)
+    return bool(
+        word_match
+        and next_value.lower().startswith(("free", "bench", "guided", "image", "time"))
+    )
 
 
 def _same_text_line(left: dict[str, Any], right: dict[str, Any]) -> bool:
@@ -321,6 +380,48 @@ def _looks_like_author_affiliation(text: str) -> bool:
     return bool(
         re.search(r"\bUniversity\b|\bInstitute\b|\bCollege\b|\bLaboratory\b", text)
         or re.search(r"[A-Z][a-z]+\s+[A-Z][a-z]+ ?\d", text)
+    )
+
+
+def _is_table_marker(text: str) -> bool:
+    return text.strip() in {"?", "✓", "✗", "✔", "×", "x", "X"}
+
+
+def _is_table_cell_text(text: str) -> bool:
+    compact = text.strip()
+    if len(compact) > 80:
+        return False
+    lowered = compact.lower()
+    table_terms = {
+        "type",
+        "method",
+        "consistency",
+        "clip semantics",
+        "properties",
+        "efficiency",
+        "t-free",
+        "i-free",
+        "nfe",
+        "runtime(s)",
+        "vram(mib)",
+        "multi-step",
+        "few-step",
+        "one-step",
+    }
+    return lowered in table_terms or _is_protected_table_text(compact)
+
+
+def _is_protected_table_text(text: str) -> bool:
+    compact = text.strip()
+    if len(compact) > 90:
+        return False
+    if re.search(r"\[[\d,\s-]+\]", compact) and not re.search(r"[.;:]", compact):
+        return True
+    return bool(
+        re.search(
+            r"\b(?:MasaCtrl|PnP|DDIM|FlowEdit|TurboEdit|SwiftEdit|InstantEdit|InfEdit|ChordEdit)\b",
+            compact,
+        )
     )
 
 

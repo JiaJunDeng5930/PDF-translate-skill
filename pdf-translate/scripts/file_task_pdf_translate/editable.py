@@ -24,6 +24,8 @@ class EditableBlock:
     source: str
     translation: str = ""
     terms: list[TermPair] = field(default_factory=list)
+    context_before: str | None = None
+    text_role: str | None = None
 
 
 @dataclass
@@ -74,6 +76,10 @@ def _editable_item_for_dump(
     block: EditableBlock,
 ) -> dict[str, Any]:
     item: dict[str, Any] = {"id": index, "source": block.source}
+    if block.context_before:
+        item["context_before"] = block.context_before
+    if block.text_role:
+        item["text_role"] = block.text_role
     if task_type == "term_extract":
         item["terms"] = [
             {"source": pair.source, "target": pair.target} for pair in block.terms

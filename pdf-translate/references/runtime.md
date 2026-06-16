@@ -26,7 +26,7 @@ The runtime re-enters the internal PDF pipeline on each advance and replays acce
 
 Each completed shard writes private PDFs under `.pdf_translate/page_outputs/`. The public output in `output/` is produced by replacing only `active_page` in the original or cumulative PDF with the corresponding page from the shard PDF. Pages outside `page_plan.target_pages` remain sourced from the original PDF.
 
-The synchronous BabelDOC progress monitor writes the latest pipeline stage into `.pdf_translate/progress.json`. Stage starts, ends, AI pauses, page completion, and memory summaries are also recorded in `trace.jsonl`. `stage_progress` is the current BabelDOC stage. `workflow_progress` and `page_progress.overall_progress` are business progress derived from the page cursor and accepted/pending AI tasks. While `status` is `needs_ai_edit` or `needs_ai_fix`, the active page uses `accepted_tasks / (accepted_tasks + 1)` and stays below 100. Only `done` and `page_completed` report terminal workflow progress. `paused_for_ai` is derived from `status in {"needs_ai_edit", "needs_ai_fix"}`. Historical trace events are audit data.
+The synchronous BabelDOC progress monitor writes the latest pipeline stage into `.pdf_translate/progress.json`. Stage starts, ends, AI pauses, page completion, and memory summaries are also recorded in `trace.jsonl`. `stage_progress` is the current BabelDOC stage. `workflow_progress` and `page_progress.overall_progress` are business progress derived from committed page cursor state only. Running stages and pending AI tasks keep active-page stage percentages in `active_page_stage_progress`; they do not advance workflow progress. Only `done` and `page_completed` report terminal workflow progress. `paused_for_ai` is derived from `status in {"needs_ai_edit", "needs_ai_fix"}`. Historical trace events are audit data.
 
 The BabelDOC-derived pipeline files with file-task changes are:
 
@@ -34,7 +34,13 @@ The BabelDOC-derived pipeline files with file-task changes are:
 - `babeldoc/format/pdf/document_il/midend/automatic_term_extractor.py`: file-task sequential term extraction and pending propagation.
 - `babeldoc/format/pdf/document_il/midend/il_translator_llm_only.py`: file-task sequential translation batches and pending propagation.
 - `babeldoc/format/pdf/high_level.py`: file-task pending propagation and stage memory summaries through the high-level pipeline.
-- `file_task_pdf_translate/text_hygiene.py`: editable-source cleanup, paragraph/line/span/font/bbox context serialization, text-role classification, fallback-line figure-label detection, author/affiliation boundary repair, and placeholder boundary repair before YAML tasks.
+- `file_task_pdf_translate/text_hygiene.py`: editable-source cleanup, paragraph/line/span/font/bbox context serialization, text-role classification, fallback-line figure-label detection, table/protected text filtering, citation and compound-hyphen repair, author/affiliation boundary repair, and placeholder boundary repair before YAML tasks.
+
+For file-backed tasks, `current_translation.yaml` may include read-only metadata such as `context_before` and `text_role`. Validation still owns `source` and `translation`/`terms`; unknown metadata fields are context for the AI and do not render directly. Page-limited runs add previous-page text context to the first lowercase-leading item so cross-page continuations can be translated with the missing preceding words while only the target page is written.
+
+Formula-heavy paragraphs keep rich-text placeholders in file-backed translation tasks, even when the generic BabelDOC LLM path would disable rich text after too many placeholders. The editable/validation loop is the protection layer for placeholder preservation.
+
+`scripts/compare_renders.py` reports changed render pages by numeric page ids parsed from filenames, so `page-3.png` remains page 3 even when filenames would sort lexicographically after `page-29.png`.
 
 Validation invariants:
 
