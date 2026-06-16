@@ -99,7 +99,6 @@ asset_dir: assets
 pages: "2-3"
 output_mode: dual
 watermark_output_mode: both
-auto_extract_glossary: false
 primary_font_family: serif
 add_formula_placehold_hint: false
 """.strip()
@@ -128,7 +127,6 @@ add_formula_placehold_hint: false
         self.assertTrue(config.no_mono)
         self.assertFalse(config.no_dual)
         self.assertEqual(config.watermark_output_mode, WatermarkOutputMode.Both)
-        self.assertFalse(config.auto_extract_glossary)
         self.assertEqual(config.primary_font_family, "serif")
         self.assertFalse(config.add_formula_placehold_hint)
 
@@ -145,7 +143,6 @@ lang_out: zh-CN
 asset_dir: assets
 output_mode: mono
 watermark_output_mode: watermarked
-auto_extract_glossary: true
 primary_font_family: null
 add_formula_placehold_hint: true
 """.strip()
@@ -185,7 +182,6 @@ lang_out: zh-CN
 asset_dir: assets
 output_mode: mono
 watermark_output_mode: watermarked
-auto_extract_glossary: true
 primary_font_family: null
 add_formula_placehold_hint: true
 """.strip()
@@ -201,7 +197,6 @@ lang_out: ja
 asset_dir: assets
 output_mode: mono
 watermark_output_mode: watermarked
-auto_extract_glossary: true
 primary_font_family: null
 add_formula_placehold_hint: true
 """.strip()
@@ -224,7 +219,6 @@ lang_out: zh-CN
 asset_dir: missing-assets
 output_mode: mono
 watermark_output_mode: watermarked
-auto_extract_glossary: true
 primary_font_family: null
 add_formula_placehold_hint: true
 """.strip()
@@ -461,7 +455,6 @@ class PagePlanRegressionTests(unittest.TestCase):
                 "pages": None,
                 "output_mode": "mono",
                 "watermark_output_mode": "no_watermark",
-                "auto_extract_glossary": False,
                 "primary_font_family": None,
                 "add_formula_placehold_hint": True,
             },
@@ -553,7 +546,6 @@ asset_dir: assets
 pages: "1-2"
 output_mode: mono
 watermark_output_mode: no_watermark
-auto_extract_glossary: false
 primary_font_family: null
 add_formula_placehold_hint: true
 """.lstrip(),
@@ -618,7 +610,6 @@ asset_dir: assets
 pages: "1-2"
 output_mode: mono
 watermark_output_mode: no_watermark
-auto_extract_glossary: false
 primary_font_family: null
 add_formula_placehold_hint: true
 """.lstrip(),
@@ -779,7 +770,7 @@ add_formula_placehold_hint: true
             paths,
             {
                 "type": "progress_paused",
-                "stage": "Automatic Term Extraction",
+                "stage": "Translate Paragraphs",
                 "stage_progress": 39.0,
                 "stage_current": 13,
                 "stage_total": 33,
@@ -819,14 +810,14 @@ add_formula_placehold_hint: true
         write_json(paths.state, state)
         write_json(
             pending_snapshot_path(paths, "pending"),
-            {"task_type": "term_extract", "blocks": [{"source": "x"}], "page": 1},
+            {"task_type": "translate", "blocks": [{"source": "x"}], "page": 1},
         )
-        write_json(answer_path(paths, "accepted"), {"terms": []})
+        write_json(answer_path(paths, "accepted"), [{"id": 0, "output": "x"}])
         _record_pipeline_progress(
             paths,
             {
                 "type": "progress_paused",
-                "stage": "Automatic Term Extraction",
+                "stage": "Translate Paragraphs",
                 "stage_progress": 100.0,
                 "stage_current": 33,
                 "stage_total": 33,
@@ -893,7 +884,7 @@ class EditableParserRegressionTests(unittest.TestCase):
         self.assertEqual(errors, [])
         self.assertIsNotNone(document)
 
-    def test_term_yaml_uses_structured_pairs(self) -> None:
+    def test_term_extract_task_is_rejected(self) -> None:
         from file_task_pdf_translate.editable import parse_editable_document
 
         document, errors = parse_editable_document(
@@ -903,37 +894,12 @@ target_language: zh-CN
 items:
   - id: 1
     source: weather labels
-    terms:
-      - source: snow
-        target: snow-target
-      - source: fall
-        target: fall-target
-""".lstrip()
-        )
-
-        self.assertEqual(errors, [])
-        self.assertIsNotNone(document)
-        assert document is not None
-        self.assertEqual(
-            [(pair.source, pair.target) for pair in document.items[0].terms],
-            [("snow", "snow-target"), ("fall", "fall-target")],
-        )
-
-    def test_legacy_term_separator_string_is_rejected(self) -> None:
-        from file_task_pdf_translate.editable import parse_editable_document
-
-        document, errors = parse_editable_document(
-            """
-task: term_extract
-items:
-  - id: 1
-    source: snow
-    terms: snow -> snow-target
+    translation: ""
 """.lstrip()
         )
 
         self.assertIsNone(document)
-        self.assertEqual(errors, ["item 1: terms must be a YAML list"])
+        self.assertEqual(errors, ["task must be translate"])
 
     def test_protected_tokens_are_plain_text_yaml_values(self) -> None:
         from file_task_pdf_translate.editable import placeholder_sequence
@@ -1193,259 +1159,6 @@ items:
 
         self.assertEqual(len(paragraphs), 1)
         self.assertEqual(paragraphs[0].unicode, "facilitates")
-
-    def test_short_figure_labels_skip_term_extraction(self) -> None:
-        from babeldoc.format.pdf.document_il.il_version_1 import Box
-        from babeldoc.format.pdf.document_il.il_version_1 import Page
-        from babeldoc.format.pdf.document_il.il_version_1 import PageLayout
-        from babeldoc.format.pdf.document_il.il_version_1 import PdfCharacter
-        from babeldoc.format.pdf.document_il.il_version_1 import PdfLine
-        from babeldoc.format.pdf.document_il.il_version_1 import PdfParagraph
-        from babeldoc.format.pdf.document_il.il_version_1 import PdfParagraphComposition
-        from babeldoc.format.pdf.document_il.il_version_1 import PdfStyle
-        from babeldoc.format.pdf.document_il.il_version_1 import VisualBbox
-        from babeldoc.format.pdf.document_il.midend.automatic_term_extractor import (
-            AutomaticTermExtractor,
-        )
-
-        style = PdfStyle(font_id="f1", font_size=10)
-        chars = []
-        for index, char in enumerate("snow"):
-            box = Box(index * 5, 0, index * 5 + 4, 8)
-            chars.append(
-                PdfCharacter(
-                    pdf_style=style,
-                    box=box,
-                    visual_bbox=VisualBbox(box=box),
-                    char_unicode=char,
-                    xobj_id=1,
-                )
-            )
-        paragraph = PdfParagraph(
-            box=Box(0, 0, 20, 8),
-            pdf_style=style,
-            pdf_paragraph_composition=[
-                PdfParagraphComposition(
-                    pdf_line=PdfLine(box=Box(0, 0, 20, 8), pdf_character=chars)
-                )
-            ],
-            xobj_id=1,
-            unicode="snow",
-            debug_id="label-1",
-            layout_label="fallback_line",
-            layout_id=3,
-        )
-        page = Page(
-            page_layout=[
-                PageLayout(
-                    box=Box(0, -10, 80, 40),
-                    id=1,
-                    conf=1,
-                    class_name="figure",
-                )
-            ],
-            pdf_paragraph=[paragraph],
-        )
-        executor = SimpleNamespace(submit=Mock())
-        pbar = SimpleNamespace(advance=Mock())
-        extractor = object.__new__(AutomaticTermExtractor)
-        extractor.translation_config = SimpleNamespace(
-            file_task_workflow=True,
-            raise_if_cancelled=lambda: None,
-        )
-
-        extractor.process_page(page, executor, pbar)
-
-        pbar.advance.assert_called_once_with(1)
-        executor.submit.assert_not_called()
-
-    def test_protected_table_cells_skip_term_extraction(self) -> None:
-        from babeldoc.format.pdf.document_il.il_version_1 import Box
-        from babeldoc.format.pdf.document_il.il_version_1 import Page
-        from babeldoc.format.pdf.document_il.il_version_1 import PdfCharacter
-        from babeldoc.format.pdf.document_il.il_version_1 import PdfLine
-        from babeldoc.format.pdf.document_il.il_version_1 import PdfParagraph
-        from babeldoc.format.pdf.document_il.il_version_1 import PdfParagraphComposition
-        from babeldoc.format.pdf.document_il.il_version_1 import PdfStyle
-        from babeldoc.format.pdf.document_il.il_version_1 import VisualBbox
-        from babeldoc.format.pdf.document_il.midend.automatic_term_extractor import (
-            AutomaticTermExtractor,
-        )
-
-        text = "Direct Inversion + MasaCtrl [3, 1 1]"
-        style = PdfStyle(font_id="f1", font_size=10)
-        chars = []
-        for index, char in enumerate(text):
-            box = Box(index * 5, 0, index * 5 + 4, 8)
-            chars.append(
-                PdfCharacter(
-                    pdf_style=style,
-                    box=box,
-                    visual_bbox=VisualBbox(box=box),
-                    char_unicode=char,
-                    xobj_id=1,
-                )
-            )
-        paragraph = PdfParagraph(
-            box=Box(0, 0, 180, 8),
-            pdf_style=style,
-            pdf_paragraph_composition=[
-                PdfParagraphComposition(
-                    pdf_line=PdfLine(box=Box(0, 0, 180, 8), pdf_character=chars)
-                )
-            ],
-            xobj_id=1,
-            unicode=text,
-            debug_id="table-1",
-            layout_label="plain text",
-            layout_id=3,
-        )
-        executor = SimpleNamespace(submit=Mock())
-        pbar = SimpleNamespace(advance=Mock())
-        extractor = object.__new__(AutomaticTermExtractor)
-        extractor.translation_config = SimpleNamespace(
-            file_task_workflow=True,
-            raise_if_cancelled=lambda: None,
-        )
-
-        extractor.process_page(Page(pdf_paragraph=[paragraph]), executor, pbar)
-
-        pbar.advance.assert_called_once_with(1)
-        executor.submit.assert_not_called()
-
-
-class TermValidationRegressionTests(unittest.TestCase):
-    def setUp(self) -> None:
-        self.tmp = Path(tempfile.mkdtemp(prefix="pdf-translate-term-test-"))
-        self.addCleanup(lambda: shutil.rmtree(self.tmp, ignore_errors=True))
-
-    def test_term_source_matching_normalizes_pdf_hyphenation(self) -> None:
-        from file_task_pdf_translate.editable import EditableBlock
-        from file_task_pdf_translate.editable import TermPair
-        from file_task_pdf_translate.editable import render_editable_document
-        from file_task_pdf_translate.state import ensure_dirs
-        from file_task_pdf_translate.state import pending_snapshot_path
-        from file_task_pdf_translate.state import paths_for
-        from file_task_pdf_translate.state import read_json
-        from file_task_pdf_translate.state import write_json
-        from file_task_pdf_translate.validation import validate_pending
-
-        paths = paths_for(self.tmp)
-        ensure_dirs(paths)
-        source = (
-            "We recast editing as a transport problem between the source and "
-            "target distribu- tions. ChordEdit achieves true real- time editing."
-        )
-        pending = {
-            "task_type": "term_extract",
-            "task_hash": "terms-normalized",
-            "blocks": [
-                {
-                    "source": source,
-                    "original_source": source,
-                    "required_placeholders": [],
-                }
-            ],
-        }
-        state = {
-            "pending_task_hash": pending["task_hash"],
-            "status": "needs_ai_edit",
-        }
-        write_json(pending_snapshot_path(paths, pending["task_hash"]), pending)
-        write_json(paths.state, state)
-        paths.current_translation.write_text(
-            render_editable_document(
-                "term_extract",
-                [
-                    EditableBlock(
-                        source=source,
-                        terms=[
-                            TermPair(
-                                source="source and target distributions",
-                                target="source-target distribution",
-                            ),
-                            TermPair(
-                                source="real-time editing",
-                                target="realtime editing",
-                            ),
-                        ],
-                    )
-                ],
-                "zh-CN",
-            ),
-            encoding="utf-8",
-        )
-
-        result = validate_pending(paths, state)
-
-        self.assertTrue(result.accepted)
-        answer = read_json(paths.accepted / "terms-normalized.answer.json", None)
-        self.assertEqual(
-            answer,
-            [
-                {
-                    "src": "source and target distributions",
-                    "tgt": "source-target distribution",
-                },
-                {"src": "real-time editing", "tgt": "realtime editing"},
-            ],
-        )
-
-    def test_term_source_matching_reports_contiguous_span_contract(self) -> None:
-        from file_task_pdf_translate.editable import EditableBlock
-        from file_task_pdf_translate.editable import TermPair
-        from file_task_pdf_translate.editable import render_editable_document
-        from file_task_pdf_translate.state import ensure_dirs
-        from file_task_pdf_translate.state import pending_snapshot_path
-        from file_task_pdf_translate.state import paths_for
-        from file_task_pdf_translate.state import write_json
-        from file_task_pdf_translate.validation import validate_pending
-
-        paths = paths_for(self.tmp)
-        ensure_dirs(paths)
-        source = "We compare the source and target distributions."
-        pending = {
-            "task_type": "term_extract",
-            "task_hash": "terms-contiguous-contract",
-            "blocks": [
-                {
-                    "source": source,
-                    "original_source": source,
-                    "required_placeholders": [],
-                }
-            ],
-        }
-        state = {
-            "pending_task_hash": pending["task_hash"],
-            "status": "needs_ai_edit",
-        }
-        write_json(pending_snapshot_path(paths, pending["task_hash"]), pending)
-        write_json(paths.state, state)
-        paths.current_translation.write_text(
-            render_editable_document(
-                "term_extract",
-                [
-                    EditableBlock(
-                        source=source,
-                        terms=[
-                            TermPair(
-                                source="source distribution",
-                                target="源分布",
-                            )
-                        ],
-                    )
-                ],
-                "zh-CN",
-            ),
-            encoding="utf-8",
-        )
-
-        result = validate_pending(paths, state)
-
-        self.assertFalse(result.accepted)
-        self.assertEqual(result.status, "needs_ai_fix")
-        self.assertIn("exact contiguous source span", "\n".join(result.errors))
-
 
 class EditableYamlWorkflowTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -1837,6 +1550,72 @@ class TranslationSelectionRegressionTests(unittest.TestCase):
             self.assertFalse(translator._is_below_translation_length(paragraph))
             self.assertTrue(translator._should_translate_paragraph(paragraph))
 
+    def test_file_task_translation_submits_one_batch_for_whole_page(self) -> None:
+        from babeldoc.format.pdf.document_il.midend import il_translator_llm_only
+
+        translator = object.__new__(il_translator_llm_only.ILTranslatorLLMOnly)
+        shared_context = SimpleNamespace(
+            first_paragraph=None,
+            recent_title_paragraph=None,
+        )
+        translator.translation_config = SimpleNamespace(
+            file_task_workflow=True,
+            raise_if_cancelled=lambda: None,
+            shared_context_cross_split_part=shared_context,
+        )
+        translator.calc_token_count = lambda text: 50
+        translator.mid = 0
+        paragraphs = [
+            SimpleNamespace(
+                debug_id=f"p{index}",
+                unicode=f"paragraph {index}",
+                layout_label="plain text",
+                pdf_paragraph_composition=[],
+            )
+            for index in range(8)
+        ]
+        page = SimpleNamespace(pdf_font=[], pdf_xobject=[], pdf_paragraph=paragraphs)
+        executor = SimpleNamespace(submit=Mock())
+        pbar = SimpleNamespace(advance=Mock())
+
+        with patch.object(
+            il_translator_llm_only,
+            "is_cid_paragraph",
+            return_value=False,
+        ), patch.object(
+            il_translator_llm_only,
+            "is_placeholder_only_paragraph",
+            return_value=False,
+        ):
+            translator.process_page(
+                page,
+                executor,
+                pbar,
+                SimpleNamespace(new_paragraph=lambda: object()),
+                SimpleNamespace(),
+                set(),
+            )
+
+        executor.submit.assert_called_once()
+        batch = executor.submit.call_args.args[1]
+        self.assertEqual(batch.paragraphs, paragraphs)
+        self.assertEqual(batch.pages, [page] * len(paragraphs))
+
+    def test_translation_stage_list_has_no_term_extraction(self) -> None:
+        from babeldoc.format.pdf.high_level import get_translation_stage
+
+        stages = get_translation_stage(
+            SimpleNamespace(
+                only_parse_generate_pdf=False,
+                skip_scanned_detection=False,
+                skip_translation=False,
+            )
+        )
+        stage_names = [name for name, _weight in stages]
+
+        self.assertIn("Translate Paragraphs", stage_names)
+        self.assertFalse(any("Term" in name for name in stage_names))
+
 
 class PdfCompatibilityRegressionTests(unittest.TestCase):
     def test_type3_charproc_metrics_move_before_leading_save(self) -> None:
@@ -2119,7 +1898,6 @@ lang_out: zh-CN
 asset_dir: assets
 output_mode: mono
 watermark_output_mode: watermarked
-auto_extract_glossary: false
 primary_font_family: null
 add_formula_placehold_hint: true
 """.lstrip(),
@@ -2191,7 +1969,6 @@ lang_out: zh-CN
 asset_dir: assets
 output_mode: mono
 watermark_output_mode: no_watermark
-auto_extract_glossary: false
 primary_font_family: null
 add_formula_placehold_hint: true
 """.lstrip(),

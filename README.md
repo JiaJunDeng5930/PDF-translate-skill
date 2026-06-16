@@ -14,8 +14,8 @@ PDF Translate Skill gives coding agents a repeatable workflow for PDF translatio
 - Uses an explicit local runtime asset directory prepared before translation.
 - Runs a no-argument `advance.py` loop.
 - Pauses at translation tasks by writing `current_translation.yaml`.
-- Lets the agent fill structured YAML `translation` fields and `terms` lists.
-- Validates YAML structure, protected tokens, stripped internal tags, and term extraction output.
+- Lets the agent fill structured YAML `translation` fields.
+- Validates YAML structure, protected tokens, and stripped internal tags.
 - Replays accepted answers into the internal PDF pipeline.
 - Generates translated PDFs while preserving layout, figures, tables, formulas, page size, and PDF structure as far as the pipeline supports.
 
@@ -115,7 +115,6 @@ asset_dir: "../pdf-translate-assets"
 pages: null
 output_mode: "mono"
 watermark_output_mode: "no_watermark"
-auto_extract_glossary: true
 primary_font_family: null
 add_formula_placehold_hint: true
 ```
@@ -142,14 +141,6 @@ Typical agent workflow:
 8. Use `output_pdf` or `output_pdfs` from the final JSON result.
 
 The runtime writes program-owned state under `.pdf_translate/`. Translation-stage editing is limited to `current_translation.yaml`.
-
-Term extraction items use structured YAML pairs:
-
-```yaml
-terms:
-  - source: source term
-    target: target-language term
-```
 
 `pages` selects which pages are translated. Use `null` for the full document or
 a string range such as `"1-3"` or `"4"` for page-limited runs. The generated PDF

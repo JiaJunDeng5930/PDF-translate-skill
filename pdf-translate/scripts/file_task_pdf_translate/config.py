@@ -127,10 +127,6 @@ def _normalize_config(root: Path, data: dict) -> dict:
             "watermark_output_mode must be one of: watermarked, no_watermark, both"
         )
 
-    auto_extract_glossary = data.get("auto_extract_glossary", True)
-    if not isinstance(auto_extract_glossary, bool):
-        errors.append("auto_extract_glossary must be true or false")
-
     primary_font_family = data.get("primary_font_family")
     if primary_font_family not in PRIMARY_FONT_FAMILIES:
         errors.append("primary_font_family must be null, serif, sans-serif, or script")
@@ -150,7 +146,6 @@ def _normalize_config(root: Path, data: dict) -> dict:
         "pages": pages,
         "output_mode": output_mode,
         "watermark_output_mode": watermark_output_mode,
-        "auto_extract_glossary": auto_extract_glossary,
         "primary_font_family": primary_font_family,
         "add_formula_placehold_hint": add_formula_placehold_hint,
     }

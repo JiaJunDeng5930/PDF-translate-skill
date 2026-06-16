@@ -12,7 +12,7 @@ This skill owns the PDF translation workflow. The code under `scripts/babeldoc/`
 Pipeline scope:
 
 - Preserve PDF parsing, layout analysis, formula/style handling, typesetting, font mapping, local asset loading, and PDF generation.
-- Add a file-backed AI task boundary around term extraction and LLM translation tasks.
+- Add a file-backed AI task boundary around page translation tasks.
 - Replace online LLM calls with `current_translation.yaml` tasks that the AI edits between `advance` calls.
 - Move runtime asset download into `scripts/download_assets.py`; translation uses the configured local `asset_dir`.
 - Remove external product entrypoints from the delivered skill surface; `scripts/advance.py` is the execution entrypoint.

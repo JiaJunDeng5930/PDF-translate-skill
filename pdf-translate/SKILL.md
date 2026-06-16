@@ -36,7 +36,6 @@ lang_out: "zh-CN"
 asset_dir: "pdf-translate-assets"
 output_mode: "mono"
 watermark_output_mode: "watermarked"
-auto_extract_glossary: true
 primary_font_family: null
 add_formula_placehold_hint: true
 ```
@@ -77,25 +76,6 @@ items:
     translation: |-
       translated text
 ```
-
-For term extraction tasks, write term pairs as YAML list entries:
-
-```yaml
-task: term_extract
-target_language: zh-CN
-items:
-  - id: 1
-    source: |-
-      source text
-    terms:
-      - source: source term
-        target: target-language term
-```
-
-Keep `terms: []` when an item has no terms.
-Each term `source` must be an exact contiguous span from the item source after
-PDF normalization. Normalization covers line-break hyphenation such as
-`distribu- tions`, abnormal whitespace, and Unicode compatibility forms.
 
 ## Runtime
 

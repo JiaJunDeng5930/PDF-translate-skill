@@ -3,8 +3,6 @@
 
 from __future__ import annotations
 
-import re
-import unicodedata
 from dataclasses import dataclass
 
 from .editable import EditableBlock
@@ -106,14 +104,7 @@ def validate_pending(paths: WorkspacePaths, state: dict) -> ValidationResult:
         write_json(paths.state, state)
         return ValidationResult(False, "needs_ai_fix", errors, [])
 
-    if pending["task_type"] == "translate":
-        answer, errors, warnings = _build_translation_answer(pending, blocks)
-    elif pending["task_type"] == "term_extract":
-        answer, errors, warnings = _build_term_answer(pending, blocks)
-    else:
-        errors = [f"unknown task type: {pending['task_type']}"]
-        answer = None
-        warnings = []
+    answer, errors, warnings = _build_translation_answer(pending, blocks)
 
     if errors:
         append_trace(
@@ -195,8 +186,6 @@ def _build_answer_summary(
         ),
         "warning_count": len(warnings),
     }
-    if pending["task_type"] == "term_extract":
-        summary["term_pair_count"] = len(answer or [])
     return summary
 
 
@@ -260,76 +249,3 @@ def _first_sequence_diff_index(expected: list[str], actual: list[str]) -> int:
         if expected_item != actual_item:
             return index
     return min(len(expected), len(actual))
-
-
-def _build_term_answer(
-    pending: dict,
-    blocks: list[EditableBlock],
-) -> tuple[list[dict], list[str], list[str]]:
-    errors = []
-    warnings = []
-    answer = []
-    seen_sources: dict[str, str] = {}
-
-    for index, (block, snapshot) in enumerate(
-        zip(blocks, pending["blocks"]),
-        start=1,
-    ):
-        source_text = snapshot["source"]
-        original_source = snapshot.get("original_source", source_text)
-        for pair in block.terms:
-            source = pair.source
-            target = pair.target
-            if len(source) >= 100:
-                errors.append(f"block {index}: source term is too long: {source[:80]}")
-                continue
-            if not _source_contains_term(source_text, original_source, source):
-                errors.append(
-                    f"block {index}: source term must be an exact contiguous source "
-                    f"span after PDF text normalization: {source}"
-                )
-                continue
-            source_key = _term_conflict_key(source)
-            if source_key in seen_sources and seen_sources[source_key] != target:
-                warnings.append(f"term has conflicting translations: {source}")
-            seen_sources[source_key] = target
-            answer.append({"src": source, "tgt": target})
-
-    return answer, errors, warnings
-
-
-def _source_contains_term(source_text: str, original_source: str, term: str) -> bool:
-    term_variants = _pdf_text_variants(term)
-    if not term_variants:
-        return False
-    source_variants = _pdf_text_variants(source_text) | _pdf_text_variants(
-        original_source
-    )
-    return any(
-        term_variant in source_variant
-        for source_variant in source_variants
-        for term_variant in term_variants
-    )
-
-
-def _pdf_text_variants(text: str) -> set[str]:
-    base = unicodedata.normalize("NFKC", text).replace("\u00ad", "")
-    base = base.lower()
-    base = base.replace("\u2010", "-").replace("\u2011", "-").replace("\u2012", "-")
-    base = base.replace("\u2013", "-").replace("\u2014", "-")
-    base = re.sub(r"\s+", " ", base).strip()
-    if not base:
-        return set()
-
-    hyphen_tight = re.sub(r"\s*-\s*", "-", base)
-    dehyphenated_breaks = re.sub(r"(?<=\w)-\s+(?=\w)", "", base)
-    dehyphenated_tight = re.sub(r"(?<=\w)-(?=\w)", "", hyphen_tight)
-    compact = re.sub(r"[\s\-]+", "", base)
-    return {base, hyphen_tight, dehyphenated_breaks, dehyphenated_tight, compact}
-
-
-def _term_conflict_key(term: str) -> str:
-    variants = _pdf_text_variants(term)
-    if not variants:
-        return ""
-    return min(variants, key=lambda item: (len(item), item))

@@ -31,12 +31,11 @@ The synchronous BabelDOC progress monitor writes the latest pipeline stage into 
 The BabelDOC-derived pipeline files with file-task changes are:
 
 - `babeldoc/file_task_bridge.py`: pending exception and immediate executor.
-- `babeldoc/format/pdf/document_il/midend/automatic_term_extractor.py`: file-task sequential term extraction and pending propagation.
-- `babeldoc/format/pdf/document_il/midend/il_translator_llm_only.py`: file-task sequential translation batches and pending propagation.
+- `babeldoc/format/pdf/document_il/midend/il_translator_llm_only.py`: file-task page translation tasks and pending propagation.
 - `babeldoc/format/pdf/high_level.py`: file-task pending propagation and stage memory summaries through the high-level pipeline.
 - `file_task_pdf_translate/text_hygiene.py`: editable-source cleanup, paragraph/line/span/font/bbox context serialization, text-role classification, fallback-line figure-label detection, table/protected text filtering, citation and compound-hyphen repair, author/affiliation boundary repair, and placeholder boundary repair before YAML tasks.
 
-For file-backed tasks, `current_translation.yaml` may include read-only metadata such as `context_before` and `text_role`. Validation still owns `source` and `translation`/`terms`; unknown metadata fields are context for the AI and do not render directly. Page-limited runs add previous-page text context to the first lowercase-leading item so cross-page continuations can be translated with the missing preceding words while only the target page is written.
+For file-backed tasks, `current_translation.yaml` may include read-only metadata such as `context_before` and `text_role`. Validation owns `source` and `translation`; unknown metadata fields are context for the AI and do not render directly. Page-limited runs add previous-page text context to the first lowercase-leading item so cross-page continuations can be translated with the missing preceding words while only the target page is written.
 
 Formula-heavy paragraphs keep rich-text placeholders in file-backed translation tasks, even when the generic BabelDOC LLM path would disable rich text after too many placeholders. The editable/validation loop is the protection layer for placeholder preservation.
 
@@ -52,12 +51,8 @@ Validation invariants:
 - Validation compares the saved snapshot sequence with each translation sequence and reports the first mismatch position, expected item, actual item, and local windows.
 - Accepted translation answers replay the translation text as written, including required placeholders.
 - Completed output PDFs are text-scanned for visible `<bN>`, `</bN>`, `{{FORMULA_N}}`, and `{{PROTECTED_N}}` markers before `state.json` is marked `done`.
-- Term extraction tasks require `terms` to be a YAML list of mappings with
-  `source` and `target` fields. Source term matching normalizes PDF line-break
-  hyphenation, abnormal whitespace, and Unicode compatibility forms. Each
-  `source` term must still be an exact contiguous span after that normalization.
 
-PDF generation is owned by the internal pipeline: `high_level.translate()` runs layout parsing, paragraph finding, styles/formulas, term extraction, IL translation, typesetting, font mapping, and PDF creation.
+PDF generation is owned by the internal pipeline: `high_level.translate()` runs layout parsing, paragraph finding, styles/formulas, IL translation, typesetting, font mapping, and PDF creation.
 
 The PDF preprocessing path preserves page annotations and links. Normalization helpers may rewrite streams and xrefs, but `/Annots` entries remain attached to their pages.
 

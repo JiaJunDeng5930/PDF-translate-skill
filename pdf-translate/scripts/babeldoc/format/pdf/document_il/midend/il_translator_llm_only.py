@@ -144,11 +144,7 @@ class ILTranslatorLLMOnly:
             self.tokenizer = tokenizer
 
         # Cache glossaries at initialization
-        self._cached_glossaries = (
-            self.shared_context_cross_split_part.get_glossaries_for_translation(
-                translation_config.auto_extract_glossary
-            )
-        )
+        self._cached_glossaries = self.shared_context_cross_split_part.get_glossaries()
 
         self.il_translator = ILTranslator(
             translate_engine=translate_engine,
@@ -227,24 +223,6 @@ class ILTranslatorLLMOnly:
             if is_file_task_workflow(self.translation_config):
                 executor = ImmediateExecutor()
                 executor2 = ImmediateExecutor()
-                self.process_cross_page_paragraph(
-                    docs,
-                    executor,
-                    pbar,
-                    tracker,
-                    executor2,
-                    translated_ids,
-                )
-                # Cross-column detection per page (after cross-page processing)
-                for page in docs.page:
-                    self.process_cross_column_paragraph(
-                        page,
-                        executor,
-                        pbar,
-                        tracker,
-                        executor2,
-                        translated_ids,
-                    )
                 for page in docs.page:
                     self.process_page(
                         page,
@@ -586,6 +564,7 @@ class ILTranslatorLLMOnly:
         translated_ids: set | None = None,
     ):
         self.translation_config.raise_if_cancelled()
+        file_task_workflow = is_file_task_workflow(self.translation_config)
         page_font_map = {}
         for font in page.pdf_font:
             page_font_map[font.font_id] = font
@@ -640,7 +619,10 @@ class ILTranslatorLLMOnly:
                     )
                 )
 
-            if total_token_count > 200 or len(paragraphs) > 5:
+            if (
+                not file_task_workflow
+                and (total_token_count > 200 or len(paragraphs) > 5)
+            ):
                 self.mid += 1
                 executor.submit(
                     self.translate_paragraph,

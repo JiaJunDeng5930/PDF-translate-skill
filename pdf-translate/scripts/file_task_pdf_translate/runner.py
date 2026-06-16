@@ -279,7 +279,6 @@ def _build_translation_config(
         working_dir = paths.working / shard_name
     return TranslationConfig(
         translator=translator,
-        term_extraction_translator=translator,
         input_file=config["input_pdf"],
         lang_in=config["lang_in"],
         lang_out=config["lang_out"],
@@ -293,7 +292,6 @@ def _build_translation_config(
         use_rich_pbar=False,
         watermark_output_mode=watermark_mode(config["watermark_output_mode"]),
         add_formula_placehold_hint=config["add_formula_placehold_hint"],
-        auto_extract_glossary=config["auto_extract_glossary"],
         primary_font_family=config["primary_font_family"],
         report_interval=2.0,
     )
@@ -406,20 +404,17 @@ def _instruction_for_pending(
 ) -> str:
     task_type = pending.get("task_type")
     target_language = pending.get("lang_out") or state["config"]["lang_out"]
-    if task_type == "term_extract":
-        body = (
-            f"Edit current_translation.yaml. For each item, write terms as YAML "
-            f"list entries with source and target fields. Use {target_language} "
-            "for target. Keep terms as [] when an item has no terms."
-        )
-    elif task_type == "translate":
+    if task_type == "translate":
         body = (
             f"Edit current_translation.yaml. Fill each item's translation field "
             f"with {target_language} text. Keep source fields unchanged. Preserve "
             "every placeholder such as <b1> and </b1> exactly, in the same order."
         )
     else:
-        body = "Edit current_translation.yaml."
+        body = (
+            "This workspace has an unsupported pending task type. Remove "
+            ".pdf_translate to start a fresh translation."
+        )
     if validation.errors:
         return body + " Resolve validation_errors and run advance again."
     return body + " Save the file and run advance again."

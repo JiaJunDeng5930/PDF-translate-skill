@@ -12,7 +12,6 @@ asset_dir: "pdf-translate-assets"
 pages: null
 output_mode: "mono"
 watermark_output_mode: "watermarked"
-auto_extract_glossary: true
 primary_font_family: null
 add_formula_placehold_hint: true
 ```
@@ -28,7 +27,6 @@ Fields:
   the range are preserved from the source PDF.
 - `output_mode`: `mono`, `dual`, or `both`.
 - `watermark_output_mode`: `watermarked`, `no_watermark`, or `both`.
-- `auto_extract_glossary`: enables the LLM glossary pre-pass.
 - `primary_font_family`: `null`, `serif`, `sans-serif`, or `script`.
 - `add_formula_placehold_hint`: asks the pipeline to include formula placeholder hints in translation prompts.
 

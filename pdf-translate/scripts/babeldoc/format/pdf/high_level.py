@@ -35,9 +35,6 @@ from babeldoc.format.pdf.babelpdf.type3 import sanitize_type3_charproc_metrics
 from babeldoc.format.pdf.document_il.midend.add_debug_information import (
     AddDebugInformation,
 )
-from babeldoc.format.pdf.document_il.midend.automatic_term_extractor import (
-    AutomaticTermExtractor,
-)
 from babeldoc.format.pdf.document_il.midend.detect_scanned_file import DetectScannedFile
 from babeldoc.format.pdf.document_il.midend.il_translator import ILTranslator
 from babeldoc.format.pdf.document_il.midend.il_translator_llm_only import (
@@ -64,7 +61,6 @@ TRANSLATE_STAGES = [
     (LayoutParser.stage_name, 14.03),  # Parse Page Layout
     (ParagraphFinder.stage_name, 6.26),  # Parse Paragraphs
     (StylesAndFormulas.stage_name, 1.66),  # Parse Formulas and Styles
-    (AutomaticTermExtractor.stage_name, 30.0),  # Extract Terms
     (ILTranslator.stage_name, 46.96),  # Translate Paragraphs
     (Typesetting.stage_name, 4.71),  # Typesetting
     (FontMapper.stage_name, 0.61),  # Add Fonts
@@ -279,7 +275,6 @@ def get_translation_stage(
                 LayoutParser.stage_name,
                 ParagraphFinder.stage_name,
                 StylesAndFormulas.stage_name,
-                AutomaticTermExtractor.stage_name,
                 ILTranslator.stage_name,
                 Typesetting.stage_name,
             ]
@@ -288,8 +283,6 @@ def get_translation_stage(
         # Original logic for selective removal
         if translation_config.skip_scanned_detection:
             should_remove.append(DetectScannedFile.stage_name)
-        if not translation_config.auto_extract_glossary:
-            should_remove.append(AutomaticTermExtractor.stage_name)
         if translation_config.skip_translation:
             should_remove.append(ILTranslator.stage_name)
 
@@ -801,16 +794,7 @@ def _do_translate_single(
         )
 
     translate_engine = translation_config.translator
-    term_extraction_engine = translation_config.get_term_extraction_translator()
-
     support_llm_translate = translator_supports_llm(translate_engine)
-    support_llm_term_extraction = translator_supports_llm(term_extraction_engine)
-
-    if support_llm_term_extraction and translation_config.auto_extract_glossary:
-        AutomaticTermExtractor(term_extraction_engine, translation_config).procress(
-            docs
-        )
-        _sample_memory_stage(translation_config, "term_extract")
 
     if not translation_config.skip_translation:
         if support_llm_translate:
