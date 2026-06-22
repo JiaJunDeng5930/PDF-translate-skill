@@ -20,6 +20,7 @@ import freetype
 import pymupdf
 from bitstring import BitStream
 
+from babeldoc.assets.embedding_assets_metadata import EMBEDDING_FONT_METADATA
 from babeldoc.format.pdf.document_il import PdfOriginalPath
 from babeldoc.format.pdf.document_il import il_version_1
 from babeldoc.format.pdf.document_il.utils.fontmap import FontMapper
@@ -567,6 +568,18 @@ def parse_truetype_data(data):
     return glyph_in_use
 
 
+def _is_pipeline_owned_identity_font(font) -> bool:
+    if len(font) < 6:
+        return False
+    file_name = Path(str(font[4])).name
+    return (
+        font[1] == "ttf"
+        and font[2] == "Type0"
+        and font[5] == "Identity-H"
+        and file_name in EMBEDDING_FONT_METADATA
+    )
+
+
 TOUNICODE_HEAD = """\
 /CIDInit /ProcSet findresource begin
 12 dict begin
@@ -626,11 +639,7 @@ def reproduce_cmap(doc):
     for page in doc:
         try:
             for font in page.get_fonts():
-                if (
-                    font[1] == "ttf"
-                    and font[2] == "Type0"
-                    and font[5] == "Identity-H"
-                ):
+                if _is_pipeline_owned_identity_font(font):
                     font_xrefs.add(font[0])
         except Exception as e:
             logger.error(f"Error in getting page fonts: {e}")

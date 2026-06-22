@@ -405,6 +405,36 @@ class OutputSelectionTests(unittest.TestCase):
 
 
 class ToUnicodeCMapRegressionTests(unittest.TestCase):
+    def test_cmap_rewrite_only_targets_pipeline_owned_identity_fonts(self) -> None:
+        from babeldoc.format.pdf.document_il.backend.pdf_creater import (
+            _is_pipeline_owned_identity_font,
+        )
+
+        self.assertTrue(
+            _is_pipeline_owned_identity_font(
+                (
+                    2047,
+                    "ttf",
+                    "Type0",
+                    "DNBALE+Source Han Serif CN Regular",
+                    "SourceHanSerifCN-Regular.ttf",
+                    "Identity-H",
+                )
+            )
+        )
+        self.assertFalse(
+            _is_pipeline_owned_identity_font(
+                (
+                    42,
+                    "ttf",
+                    "Type0",
+                    "AAAAAA+SourceOwnedFont",
+                    "SourceOwnedFont.ttf",
+                    "Identity-H",
+                )
+            )
+        )
+
     def test_rebuilt_tounicode_uses_utf16be_and_normalizes_cjk_compatibility(self) -> None:
         from babeldoc.format.pdf.document_il.backend.pdf_creater import make_tounicode
         from babeldoc.format.pdf.document_il.backend.pdf_creater import (
