@@ -1,3 +1,8 @@
+# Derived from BabelDOC.
+# Local pdf-translate change on 2026-06-22: output filenames use plain mono/dual
+# names, and embedded Identity-H TrueType ToUnicode maps are rebuilt after
+# subsetting so copied CJK text remains valid Unicode.
+
 import io
 import itertools
 import logging
@@ -15,7 +20,6 @@ import freetype
 import pymupdf
 from bitstring import BitStream
 
-from babeldoc.assets.embedding_assets_metadata import FONT_NAMES
 from babeldoc.format.pdf.document_il import PdfOriginalPath
 from babeldoc.format.pdf.document_il import il_version_1
 from babeldoc.format.pdf.document_il.utils.fontmap import FontMapper
@@ -27,7 +31,6 @@ from babeldoc.format.pdf.document_il.utils.zstd_helper import zstd_decompress
 from babeldoc.format.pdf.new_parser.pdf_token_serializer import serialize_pdf_token
 from babeldoc.format.pdf.translation_config import TranslateResult
 from babeldoc.format.pdf.translation_config import TranslationConfig
-from babeldoc.format.pdf.translation_config import WatermarkOutputMode
 
 logger = logging.getLogger(__name__)
 
@@ -474,17 +477,48 @@ def parse_mapping(text):
     return mapping
 
 
+def _hex_to_utf16be_text(value: int) -> str | None:
+    raw = f"{value:x}"
+    if len(raw) % 2:
+        raw = "0" + raw
+    try:
+        return bytes.fromhex(raw).decode("utf-16-be")
+    except UnicodeDecodeError:
+        return None
+
+
+def _mapping_value_to_text(value: int) -> str | None:
+    if 0 <= value <= 0x10FFFF:
+        try:
+            return chr(value)
+        except ValueError:
+            return None
+    return _hex_to_utf16be_text(value)
+
+
+def _mapping_value_plus_offset(value: int, offset: int) -> int:
+    if value <= 0x10FFFF:
+        return value + offset
+    text = _hex_to_utf16be_text(value)
+    if text and len(text) == 1:
+        return ord(text) + offset
+    return value + offset
+
+
 def apply_normalization(cmap, gid, code):
+    text = _mapping_value_to_text(code)
+    if not text:
+        return
     need = False
-    if 0x2F00 <= code <= 0x2FD5:  # Kangxi Radicals
-        need = True
-    if 0xF900 <= code <= 0xFAFF:  # CJK Compatibility Ideographs
-        need = True
+    for char in text:
+        char_code = ord(char)
+        if 0x2F00 <= char_code <= 0x2FD5:  # Kangxi Radicals
+            need = True
+        if 0xF900 <= char_code <= 0xFAFF:  # CJK Compatibility Ideographs
+            need = True
     if need:
-        norm = unicodedata.normalize("NFD", chr(code))
-        cmap[gid] = ord(norm)
-    else:
-        cmap[gid] = code
+        text = unicodedata.normalize("NFD", text)
+    cmap[gid] = text.encode("utf-16-be").hex()
 
 
 def batched(iterable, n, *, strict=False):
@@ -501,7 +535,7 @@ def batched(iterable, n, *, strict=False):
 def update_tounicode_cmap_pair(cmap, data):
     for start, stop, value in batched(data, 3):
         for gid in range(start, stop + 1):
-            code = value + gid - start
+            code = _mapping_value_plus_offset(value, gid - start)
             apply_normalization(cmap, gid, code)
 
 
@@ -558,47 +592,54 @@ def make_tounicode(cmap, used):
     line = [TOUNICODE_HEAD]
     for block in batched(short, 100):
         line.append(f"{len(block)} beginbfchar")
-        for glyph, code in block:
-            if code < 0x10000:
-                line.append(f"<{glyph:04x}><{code:04x}>")
-            else:
-                code -= 0x10000
-                high = 0xD800 + (code >> 10)
-                low = 0xDC00 + (code & 0b1111111111)
-                line.append(f"<{glyph:04x}><{high:04x}{low:04x}>")
+        for glyph, value_hex in block:
+            line.append(f"<{glyph:04x}><{value_hex}>")
         line.append("endbfchar")
     line.append(TOUNICODE_TAIL)
     return "\n".join(line)
 
 
-def reproduce_one_font(doc, index):
+def reproduce_one_font(doc, index) -> bool:
     m = doc.xref_get_key(index, "ToUnicode")
     f = doc.xref_get_key(index, "DescendantFonts")
-    if m[0] == "xref" and f[0] == "array":
-        mi = to_int(m[1])
-        fi = to_int(f[1])
-        ff = doc.xref_get_key(fi, "FontDescriptor/FontFile2")
-        ms = doc.xref_stream(mi)
-        fs = doc.xref_stream(to_int(ff[1]))
-        cmap = parse_tounicode_cmap(ms)
-        used = parse_truetype_data(fs)
-        text = make_tounicode(cmap, used)
-        doc.update_stream(mi, bytes(text, "U8"))
+    if m[0] != "xref" or f[0] != "array":
+        return False
+    mi = to_int(m[1])
+    fi = to_int(f[1])
+    ff = doc.xref_get_key(fi, "FontDescriptor/FontFile2")
+    if ff[0] != "xref":
+        return False
+    ms = doc.xref_stream(mi)
+    fs = doc.xref_stream(to_int(ff[1]))
+    cmap = parse_tounicode_cmap(ms)
+    if not cmap:
+        return False
+    used = parse_truetype_data(fs)
+    text = make_tounicode(cmap, used)
+    doc.update_stream(mi, text.encode("ascii"))
+    return True
 
 
 def reproduce_cmap(doc):
     assert doc
-    font_set = set()
+    font_xrefs = set()
     for page in doc:
         try:
-            font_list = page.get_fonts()
-            for font in font_list:
-                if font[1] == "ttf" and font[3] in FONT_NAMES and ".ttf" in font[4]:
-                    font_set.add(font)
+            for font in page.get_fonts():
+                if (
+                    font[1] == "ttf"
+                    and font[2] == "Type0"
+                    and font[5] == "Identity-H"
+                ):
+                    font_xrefs.add(font[0])
         except Exception as e:
             logger.error(f"Error in getting page fonts: {e}")
-    for font in font_set:
-        reproduce_one_font(doc, font[0])
+    rewritten = 0
+    for font_xref in font_xrefs:
+        if reproduce_one_font(doc, font_xref):
+            rewritten += 1
+    if rewritten:
+        logger.info("rewrote %s embedded TrueType ToUnicode CMaps", rewritten)
     return doc
 
 
@@ -1507,11 +1548,6 @@ class PDFCreater:
         try:
             basename = Path(translation_config.input_file).stem
             debug_suffix = ".debug" if translation_config.debug else ""
-            if (
-                translation_config.watermark_output_mode
-                != WatermarkOutputMode.Watermarked
-            ):
-                debug_suffix += ".no_watermark"
             mono_out_path = translation_config.get_output_file_path(
                 f"{basename}{debug_suffix}.{translation_config.lang_out}.mono.pdf",
             )

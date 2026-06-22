@@ -25,7 +25,7 @@ Unix shell:
 python "<skill-dir>/scripts/download_assets.py" "<asset-dir>"
 ```
 
-Create `pdf_translate.yaml` in the PDF workspace before the first run. Include the source PDF, languages, asset directory, output mode, watermark mode, and pipeline options. Read `references/config.md` for the full schema.
+Create `pdf_translate.yaml` in the PDF workspace before the first run. Include the source PDF, languages, asset directory, output mode, and pipeline options. Read `references/config.md` for the full schema.
 
 Minimal example:
 
@@ -35,7 +35,6 @@ lang_in: "en"
 lang_out: "zh-CN"
 asset_dir: "pdf-translate-assets"
 output_mode: "mono"
-watermark_output_mode: "watermarked"
 primary_font_family: null
 add_formula_placehold_hint: true
 ```

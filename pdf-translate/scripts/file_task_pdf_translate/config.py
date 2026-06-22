@@ -7,15 +7,10 @@ import hashlib
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from babeldoc.format.pdf.translation_config import WatermarkOutputMode
 
 
 CONFIG_FILE_NAME = "pdf_translate.yaml"
 OUTPUT_MODES = {"mono", "dual", "both"}
-WATERMARK_MODE_NAMES = {"watermarked", "no_watermark", "both"}
 PRIMARY_FONT_FAMILIES = {None, "serif", "sans-serif", "script"}
 
 
@@ -49,17 +44,6 @@ def load_workspace_config(root: Path) -> WorkspaceConfig:
     return WorkspaceConfig(path=config_path, snapshot=snapshot)
 
 
-def watermark_mode(value: str) -> "WatermarkOutputMode":
-    from babeldoc.format.pdf.translation_config import WatermarkOutputMode
-
-    modes = {
-        "watermarked": WatermarkOutputMode.Watermarked,
-        "no_watermark": WatermarkOutputMode.NoWatermark,
-        "both": WatermarkOutputMode.Both,
-    }
-    return modes[value]
-
-
 def output_flags(output_mode: str) -> tuple[bool, bool]:
     if output_mode == "mono":
         return True, False
@@ -86,6 +70,10 @@ def _normalize_config(root: Path, data: dict) -> dict:
         errors.append("version is not a translation setting; remove version")
     if "table_model" in data:
         errors.append("table_model is not a translation setting; remove table_model")
+    if "watermark_output_mode" in data:
+        errors.append(
+            "remove watermark_output_mode; outputs are clean by default"
+        )
 
     input_pdf = data.get("input_pdf")
     if not input_pdf:
@@ -121,12 +109,6 @@ def _normalize_config(root: Path, data: dict) -> dict:
     if output_mode not in OUTPUT_MODES:
         errors.append("output_mode must be one of: mono, dual, both")
 
-    watermark_output_mode = data.get("watermark_output_mode", "watermarked")
-    if watermark_output_mode not in WATERMARK_MODE_NAMES:
-        errors.append(
-            "watermark_output_mode must be one of: watermarked, no_watermark, both"
-        )
-
     primary_font_family = data.get("primary_font_family")
     if primary_font_family not in PRIMARY_FONT_FAMILIES:
         errors.append("primary_font_family must be null, serif, sans-serif, or script")
@@ -145,7 +127,6 @@ def _normalize_config(root: Path, data: dict) -> dict:
         "asset_dir": str(asset_dir),
         "pages": pages,
         "output_mode": output_mode,
-        "watermark_output_mode": watermark_output_mode,
         "primary_font_family": primary_font_family,
         "add_formula_placehold_hint": add_formula_placehold_hint,
     }

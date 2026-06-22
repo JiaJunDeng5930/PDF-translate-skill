@@ -11,7 +11,6 @@ lang_out: "zh-CN"
 asset_dir: "pdf-translate-assets"
 pages: null
 output_mode: "mono"
-watermark_output_mode: "watermarked"
 primary_font_family: null
 add_formula_placehold_hint: true
 ```
@@ -26,7 +25,6 @@ Fields:
   translate. The output PDF keeps the source document page count; pages outside
   the range are preserved from the source PDF.
 - `output_mode`: `mono`, `dual`, or `both`.
-- `watermark_output_mode`: `watermarked`, `no_watermark`, or `both`.
 - `primary_font_family`: `null`, `serif`, `sans-serif`, or `script`.
 - `add_formula_placehold_hint`: asks the pipeline to include formula placeholder hints in translation prompts.
 

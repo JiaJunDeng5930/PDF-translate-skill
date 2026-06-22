@@ -1,3 +1,7 @@
+# Derived from BabelDOC.
+# Local pdf-translate change on 2026-06-22: visible watermark paragraph
+# injection was removed; generated PDFs are clean by default.
+
 from __future__ import annotations
 
 import copy
@@ -11,7 +15,6 @@ import pymupdf
 import regex
 from rtree import index
 
-from babeldoc.const import WATERMARK_VERSION
 from babeldoc.format.pdf.document_il import Box
 from babeldoc.format.pdf.document_il import PdfCharacter
 from babeldoc.format.pdf.document_il import PdfCurve
@@ -24,7 +27,6 @@ from babeldoc.format.pdf.document_il.utils.fontmap import FontMapper
 from babeldoc.format.pdf.document_il.utils.formular_helper import update_formula_data
 from babeldoc.format.pdf.document_il.utils.layout_helper import box_to_tuple
 from babeldoc.format.pdf.translation_config import TranslationConfig
-from babeldoc.format.pdf.translation_config import WatermarkOutputMode
 
 logger = logging.getLogger(__name__)
 
@@ -1148,12 +1150,6 @@ class Typesetting:
                 for font in xobj.pdf_font:
                     if font.font_id:
                         fonts[xobj.xobj_id][font.font_id] = font
-        if (
-            page.page_number == 0
-            and self.translation_config.watermark_output_mode
-            == WatermarkOutputMode.Watermarked
-        ):
-            self.add_watermark(page)
         try:
             para_index = index.Index()
             para_map = {}
@@ -1216,40 +1212,6 @@ class Typesetting:
         # 开始实际的渲染过程
         for paragraph in page.pdf_paragraph:
             self.render_paragraph(paragraph, page, fonts)
-
-    def add_watermark(self, page: il_version_1.Page):
-        page_width = page.cropbox.box.x2 - page.cropbox.box.x
-        page_height = page.cropbox.box.y2 - page.cropbox.box.y
-        style = il_version_1.PdfStyle(
-            font_id="base",
-            font_size=6,
-            graphic_state=il_version_1.GraphicState(),
-        )
-        text = f"本文档由 funstory.ai 的开源 PDF 翻译库 BabelDOC {WATERMARK_VERSION} (https://github.com/funstory-ai/BabelDOC) 翻译，本仓库正在积极的建设当中，欢迎 star 和关注。"
-        if self.translation_config.debug:
-            text += "\n 当前为 DEBUG 模式，将显示更多辅助信息。请注意，部分框的位置对应原文，但在译文中可能不正确。"
-        page.pdf_paragraph.append(
-            il_version_1.PdfParagraph(
-                first_line_indent=False,
-                box=il_version_1.Box(
-                    x=page.cropbox.box.x + page_width * 0.05,
-                    y=page.cropbox.box.y,
-                    x2=page.cropbox.box.x2,
-                    y2=page.cropbox.box.y2 - page_height * 0.05,
-                ),
-                vertical=False,
-                pdf_style=style,
-                pdf_paragraph_composition=[
-                    il_version_1.PdfParagraphComposition(
-                        pdf_same_style_unicode_characters=il_version_1.PdfSameStyleUnicodeCharacters(
-                            unicode=text,
-                            pdf_style=style,
-                        ),
-                    ),
-                ],
-                xobj_id=-1,
-            ),
-        )
 
     def render_paragraph(
         self,

@@ -1,4 +1,3 @@
-import enum
 import logging
 import shutil
 import tempfile
@@ -12,12 +11,6 @@ from babeldoc.progress_monitor import ProgressMonitor
 from babeldoc.translator.translator import BaseTranslator
 
 logger = logging.getLogger(__name__)
-
-
-class WatermarkOutputMode(enum.Enum):
-    Watermarked = "watermarked"
-    NoWatermark = "no_watermark"
-    Both = "both"
 
 
 @dataclass(frozen=True, slots=True)
@@ -100,7 +93,6 @@ class TranslationConfig:
         min_text_length: int = 5,
         use_side_by_side_dual: bool = True,  # Deprecated: 是否使用拼版式双语 PDF（并排显示原文和译文）向下兼容选项，已停用。
         use_alternating_pages_dual: bool = False,
-        watermark_output_mode: WatermarkOutputMode = WatermarkOutputMode.Watermarked,
         # Add split-related parameters
         show_char_box: bool = False,
         skip_scanned_detection: bool = False,
@@ -135,7 +127,6 @@ class TranslationConfig:
         self.pages = pages
         self.page_ranges = self.parse_pages(pages) if pages else None
         self.debug = debug
-        self.watermark_output_mode = watermark_output_mode
 
         self.output_dir = output_dir
         self.working_dir = working_dir
@@ -321,8 +312,6 @@ class TranslateResult:
     total_seconds: float
     mono_pdf_path: Path | None
     dual_pdf_path: Path | None
-    no_watermark_mono_pdf_path: Path | None
-    no_watermark_dual_pdf_path: Path | None
     peak_memory_usage: int | None
     total_valid_character_count: int | None
     total_valid_text_token_count: int | None
@@ -334,11 +323,6 @@ class TranslateResult:
     ):
         self.mono_pdf_path = mono_pdf_path
         self.dual_pdf_path = dual_pdf_path
-
-        # For compatibility considerations, if only a non-watermarked PDF is generated,
-        # the values of mono_pdf_path and no_watermark_mono_pdf_path are the same.
-        self.no_watermark_mono_pdf_path = mono_pdf_path
-        self.no_watermark_dual_pdf_path = dual_pdf_path
 
         self.total_valid_character_count = None
         self.total_valid_text_token_count = None
@@ -357,24 +341,6 @@ class TranslateResult:
 
         if self.dual_pdf_path:
             result.append(f"\tDual-language PDF: {self.dual_pdf_path}")
-
-        if (
-            hasattr(self, "no_watermark_mono_pdf_path")
-            and self.no_watermark_mono_pdf_path
-            and self.no_watermark_mono_pdf_path != self.mono_pdf_path
-        ):
-            result.append(
-                f"\tNo-watermark Monolingual PDF: {self.no_watermark_mono_pdf_path}"
-            )
-
-        if (
-            hasattr(self, "no_watermark_dual_pdf_path")
-            and self.no_watermark_dual_pdf_path
-            and self.no_watermark_dual_pdf_path != self.dual_pdf_path
-        ):
-            result.append(
-                f"\tNo-watermark Dual-language PDF: {self.no_watermark_dual_pdf_path}"
-            )
 
         if hasattr(self, "peak_memory_usage") and self.peak_memory_usage:
             result.append(f"\tPeak memory usage: {self.peak_memory_usage} MB")

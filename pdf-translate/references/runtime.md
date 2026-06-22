@@ -54,6 +54,10 @@ Validation invariants:
 
 PDF generation is owned by the internal pipeline: `high_level.translate()` runs layout parsing, paragraph finding, styles/formulas, IL translation, typesetting, font mapping, and PDF creation.
 
+Generated PDFs are clean by default. The bundled pipeline omits the visible BabelDOC first-page watermark path, while BabelDOC metadata attribution remains in the PDF producer metadata.
+
+After font subsetting, the runtime rewrites embedded Identity-H TrueType `ToUnicode` CMaps with valid UTF-16BE destinations and CJK compatibility normalization so copied Chinese text remains usable in mainstream readers.
+
 The PDF preprocessing path preserves page annotations and links. Normalization helpers may rewrite streams and xrefs, but `/Annots` entries remain attached to their pages.
 
 Runtime assets are prepared outside translation:

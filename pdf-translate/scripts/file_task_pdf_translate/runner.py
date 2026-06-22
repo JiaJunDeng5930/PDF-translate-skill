@@ -23,7 +23,6 @@ from babeldoc.utils import memory
 from .config import ConfigError
 from .config import load_workspace_config
 from .config import output_flags
-from .config import watermark_mode
 from .state import append_trace
 from .state import accepted_answer_count
 from .state import ensure_page_plan
@@ -290,7 +289,6 @@ def _build_translation_config(
         no_dual=no_dual,
         no_mono=no_mono,
         use_rich_pbar=False,
-        watermark_output_mode=watermark_mode(config["watermark_output_mode"]),
         add_formula_placehold_hint=config["add_formula_placehold_hint"],
         primary_font_family=config["primary_font_family"],
         report_interval=2.0,
@@ -745,16 +743,10 @@ def _collect_output_pdfs(result, config: dict) -> tuple[dict[str, str], str | No
     output_modes = (
         ("mono", "dual") if config["output_mode"] == "both" else (config["output_mode"],)
     )
-    watermark_modes = (
-        ("watermarked", "no_watermark")
-        if config["watermark_output_mode"] == "both"
-        else (config["watermark_output_mode"],)
-    )
-    for watermark in watermark_modes:
-        for output_mode in output_modes:
-            path = _output_path_for(result, watermark, output_mode)
-            if path:
-                output_pdfs[f"{watermark}_{output_mode}"] = str(path)
+    for output_mode in output_modes:
+        path = getattr(result, f"{output_mode}_pdf_path")
+        if path:
+            output_pdfs[output_mode] = str(path)
     primary_key = _primary_output_key(config)
     primary = output_pdfs.get(primary_key)
     if primary is not None:
@@ -875,21 +867,11 @@ def _validate_output_pdfs(output_pdfs: dict[str, str]) -> list[str]:
     return errors
 
 
-def _output_path_for(result, watermark: str, output_mode: str):
-    if watermark == "watermarked":
-        return getattr(result, f"{output_mode}_pdf_path")
-    no_watermark_path = getattr(result, f"no_watermark_{output_mode}_pdf_path")
-    return no_watermark_path or getattr(result, f"{output_mode}_pdf_path")
-
-
 def _primary_output_key(config: dict) -> str:
-    watermark = config["watermark_output_mode"]
     output_mode = config["output_mode"]
-    if watermark == "both":
-        watermark = "watermarked"
     if output_mode == "both":
         output_mode = "mono"
-    return f"{watermark}_{output_mode}"
+    return output_mode
 
 
 def main() -> int:

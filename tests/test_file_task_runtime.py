@@ -79,12 +79,11 @@ table_model: unsupported
         self.assertIn("asset_dir is required", message)
         self.assertIn("version is not a translation setting", message)
         self.assertIn("output_mode must be one of", message)
-        self.assertIn("watermark_output_mode must be one of", message)
+        self.assertIn("remove watermark_output_mode", message)
         self.assertIn("primary_font_family must be", message)
         self.assertIn("table_model is not a translation setting", message)
 
-    def test_config_maps_language_output_and_watermark_to_babeldoc_params(self) -> None:
-        from babeldoc.format.pdf.translation_config import WatermarkOutputMode
+    def test_config_maps_language_output_to_babeldoc_params(self) -> None:
         from file_task_pdf_translate.config import load_workspace_config
         from file_task_pdf_translate.runner import _build_translation_config
         from file_task_pdf_translate.state import paths_for
@@ -98,7 +97,6 @@ lang_out: ja
 asset_dir: assets
 pages: "2-3"
 output_mode: dual
-watermark_output_mode: both
 primary_font_family: serif
 add_formula_placehold_hint: false
 """.strip()
@@ -126,7 +124,7 @@ add_formula_placehold_hint: false
         self.assertEqual(config.pages, "2-3")
         self.assertTrue(config.no_mono)
         self.assertFalse(config.no_dual)
-        self.assertEqual(config.watermark_output_mode, WatermarkOutputMode.Both)
+        self.assertFalse(hasattr(config, "watermark_output_mode"))
         self.assertEqual(config.primary_font_family, "serif")
         self.assertFalse(config.add_formula_placehold_hint)
 
@@ -142,7 +140,6 @@ lang_in: en
 lang_out: zh-CN
 asset_dir: assets
 output_mode: mono
-watermark_output_mode: watermarked
 primary_font_family: null
 add_formula_placehold_hint: true
 """.strip()
@@ -181,7 +178,6 @@ lang_in: en
 lang_out: zh-CN
 asset_dir: assets
 output_mode: mono
-watermark_output_mode: watermarked
 primary_font_family: null
 add_formula_placehold_hint: true
 """.strip()
@@ -196,7 +192,6 @@ lang_in: en
 lang_out: ja
 asset_dir: assets
 output_mode: mono
-watermark_output_mode: watermarked
 primary_font_family: null
 add_formula_placehold_hint: true
 """.strip()
@@ -218,7 +213,6 @@ lang_in: en
 lang_out: zh-CN
 asset_dir: missing-assets
 output_mode: mono
-watermark_output_mode: watermarked
 primary_font_family: null
 add_formula_placehold_hint: true
 """.strip()
@@ -377,22 +371,18 @@ class OutputSelectionTests(unittest.TestCase):
         from file_task_pdf_translate.runner import _collect_output_pdfs
 
         result = SimpleNamespace(
-            mono_pdf_path=Path("out/watermarked.mono.pdf"),
-            dual_pdf_path=Path("out/watermarked.dual.pdf"),
-            no_watermark_mono_pdf_path=Path("out/clean.mono.pdf"),
-            no_watermark_dual_pdf_path=Path("out/clean.dual.pdf"),
+            mono_pdf_path=Path("out/clean.mono.pdf"),
+            dual_pdf_path=Path("out/clean.dual.pdf"),
         )
         output_pdfs, primary = _collect_output_pdfs(
             result,
             {
                 "output_mode": "dual",
-                "watermark_output_mode": "no_watermark",
             },
         )
 
-        self.assertNotIn("watermarked_dual", output_pdfs)
-        self.assertNotIn("no_watermark_mono", output_pdfs)
-        self.assertEqual(output_pdfs["no_watermark_dual"], "out\\clean.dual.pdf")
+        self.assertNotIn("mono", output_pdfs)
+        self.assertEqual(output_pdfs["dual"], "out\\clean.dual.pdf")
         self.assertEqual(primary, "out\\clean.dual.pdf")
 
     def test_output_pdf_validation_rejects_visible_internal_markers(self) -> None:
@@ -408,10 +398,34 @@ class OutputSelectionTests(unittest.TestCase):
             doc.save(pdf_path)
             doc.close()
 
-            errors = _validate_output_pdfs({"no_watermark_mono": str(pdf_path)})
+            errors = _validate_output_pdfs({"mono": str(pdf_path)})
 
         self.assertTrue(errors)
         self.assertIn("leaks internal markers", errors[0])
+
+
+class ToUnicodeCMapRegressionTests(unittest.TestCase):
+    def test_rebuilt_tounicode_uses_utf16be_and_normalizes_cjk_compatibility(self) -> None:
+        from babeldoc.format.pdf.document_il.backend.pdf_creater import make_tounicode
+        from babeldoc.format.pdf.document_il.backend.pdf_creater import (
+            parse_tounicode_cmap,
+        )
+
+        cmap = parse_tounicode_cmap(
+            b"""
+1 beginbfchar
+<0001> <1f10b>
+<0002> <f97e>
+endbfchar
+"""
+        )
+
+        rebuilt = make_tounicode(cmap, [1, 2])
+
+        self.assertIn("<0001><d83cdd0b>", rebuilt)
+        self.assertIn("<0002><91cf>", rebuilt)
+        self.assertNotIn("<1f10b>", rebuilt)
+        self.assertNotIn("<f97e>", rebuilt)
 
 
 class PagePlanRegressionTests(unittest.TestCase):
@@ -454,7 +468,6 @@ class PagePlanRegressionTests(unittest.TestCase):
                 "lang_out": "zh-CN",
                 "pages": None,
                 "output_mode": "mono",
-                "watermark_output_mode": "no_watermark",
                 "primary_font_family": None,
                 "add_formula_placehold_hint": True,
             },
@@ -498,7 +511,6 @@ class PagePlanRegressionTests(unittest.TestCase):
             "config": {
                 "input_pdf": str(source_pdf),
                 "output_mode": "mono",
-                "watermark_output_mode": "no_watermark",
             },
             "page_plan": {
                 "source_page_count": 3,
@@ -512,10 +524,10 @@ class PagePlanRegressionTests(unittest.TestCase):
         output_pdfs, primary = _merge_page_output_pdfs(
             paths,
             state,
-            {"no_watermark_mono": str(shard_pdf)},
+            {"mono": str(shard_pdf)},
         )
 
-        self.assertEqual(primary, output_pdfs["no_watermark_mono"])
+        self.assertEqual(primary, output_pdfs["mono"])
         merged = pymupdf.open(primary)
         try:
             page_texts = [page.get_text("text") for page in merged]
@@ -545,7 +557,6 @@ lang_out: zh-CN
 asset_dir: assets
 pages: "1-2"
 output_mode: mono
-watermark_output_mode: no_watermark
 primary_font_family: null
 add_formula_placehold_hint: true
 """.lstrip(),
@@ -556,8 +567,6 @@ add_formula_placehold_hint: true
         translate_result = SimpleNamespace(
             mono_pdf_path=output_pdf,
             dual_pdf_path=None,
-            no_watermark_mono_pdf_path=output_pdf,
-            no_watermark_dual_pdf_path=None,
         )
 
         with patch(
@@ -609,7 +618,6 @@ lang_out: zh-CN
 asset_dir: assets
 pages: "1-2"
 output_mode: mono
-watermark_output_mode: no_watermark
 primary_font_family: null
 add_formula_placehold_hint: true
 """.lstrip(),
@@ -629,7 +637,7 @@ add_formula_placehold_hint: true
         }
         state["shard_ready"] = {
             "page": 1,
-            "output_pdfs": {"no_watermark_mono": str(shard_pdf)},
+            "output_pdfs": {"mono": str(shard_pdf)},
         }
         write_json(paths.state, state)
 
@@ -1897,7 +1905,6 @@ lang_in: en
 lang_out: zh-CN
 asset_dir: assets
 output_mode: mono
-watermark_output_mode: watermarked
 primary_font_family: null
 add_formula_placehold_hint: true
 """.lstrip(),
@@ -1968,7 +1975,6 @@ lang_in: en
 lang_out: zh-CN
 asset_dir: assets
 output_mode: mono
-watermark_output_mode: no_watermark
 primary_font_family: null
 add_formula_placehold_hint: true
 """.lstrip(),
@@ -1989,8 +1995,6 @@ add_formula_placehold_hint: true
             translate_result = SimpleNamespace(
                 mono_pdf_path=output_pdf,
                 dual_pdf_path=None,
-                no_watermark_mono_pdf_path=output_pdf,
-                no_watermark_dual_pdf_path=None,
             )
 
             with patch(

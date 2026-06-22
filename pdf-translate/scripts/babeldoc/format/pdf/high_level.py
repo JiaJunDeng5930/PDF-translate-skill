@@ -5,11 +5,11 @@
 # Derived from BabelDOC commit 980fd2821d54cbabd270349fe509e8177c35e4c3.
 # Modified on 2026-06-09 to propagate file-backed AI task pauses through
 # the pdf-translate skill advance loop.
+# Modified on 2026-06-22 to remove visible first-page watermark generation and
+# keep final output PDFs on the clean path.
 
 import copy
-import io
 import logging
-import pathlib
 import re
 import shutil
 import threading
@@ -48,7 +48,6 @@ from babeldoc.format.pdf.document_il.utils.fontmap import FontMapper
 from babeldoc.format.pdf.document_il.json_converter import ILJsonConverter
 from babeldoc.format.pdf.translation_config import TranslateResult
 from babeldoc.format.pdf.translation_config import TranslationConfig
-from babeldoc.format.pdf.translation_config import WatermarkOutputMode
 from babeldoc.file_task_bridge import FileTaskPending
 from babeldoc.progress_monitor import ProgressMonitor
 from babeldoc.utils import memory
@@ -171,8 +170,6 @@ def add_metadata(
     for attr in (
         "mono_pdf_path",
         "dual_pdf_path",
-        "no_watermark_mono_pdf_path",
-        "no_watermark_dual_pdf_path",
     ):
         path = getattr(translate_result, attr)
         if not path or path in processed:
@@ -213,8 +210,6 @@ def fix_cmap(translate_result: TranslateResult, translate_config: TranslationCon
     for attr in (
         "mono_pdf_path",
         "dual_pdf_path",
-        "no_watermark_mono_pdf_path",
-        "no_watermark_dual_pdf_path",
     ):
         path = getattr(translate_result, attr)
         if not path or path in processed:
@@ -566,9 +561,7 @@ def migrate_toc(
 
     files = {
         translate_result.dual_pdf_path,
-        # translate_result.mono_pdf_path,
-        translate_result.no_watermark_dual_pdf_path,
-        # translate_result.no_watermark_mono_pdf_path
+        # translate_result.mono_pdf_path
     }
 
     for f in files:
@@ -821,23 +814,6 @@ def _do_translate_single(
             docs,
             translation_config.get_working_file_path("add_debug_information.json"),
         )
-    mono_watermark_first_page_doc_bytes = None
-    dual_watermark_first_page_doc_bytes = None
-    try:
-        if translation_config.watermark_output_mode == WatermarkOutputMode.Both:
-            mono_watermark_first_page_doc_bytes, dual_watermark_first_page_doc_bytes = (
-                generate_first_page_with_watermark(
-                    doc_pdf2zh, translation_config, docs, mediabox_data
-                )
-            )
-    except Exception:
-        logger.warning(
-            "Failed to generate watermark for first page, using no watermark"
-        )
-        translation_config.watermark_output_mode = WatermarkOutputMode.NoWatermark
-        mono_watermark_first_page_doc_bytes = None
-        dual_watermark_first_page_doc_bytes = None
-
     Typesetting(translation_config).typesetting_document(docs)
     _sample_memory_stage(translation_config, "typesetting")
     logger.debug(f"finish typsetting from {temp_pdf_path}")
@@ -850,115 +826,9 @@ def _do_translate_single(
     pdf_creater = PDFCreater(temp_pdf_path, docs, translation_config, mediabox_data)
     result = pdf_creater.write(translation_config)
     _sample_memory_stage(translation_config, "pdf_save")
-    try:
-        if mono_watermark_first_page_doc_bytes:
-            mono_watermark_pdf = merge_watermark_doc(
-                result.mono_pdf_path,
-                mono_watermark_first_page_doc_bytes,
-                translation_config,
-            )
-            result.mono_pdf_path = mono_watermark_pdf
-    except Exception:
-        result.mono_pdf_path = result.no_watermark_mono_pdf_path
-    try:
-        if dual_watermark_first_page_doc_bytes:
-            dual_watermark_pdf = merge_watermark_doc(
-                result.dual_pdf_path,
-                dual_watermark_first_page_doc_bytes,
-                translation_config,
-            )
-            result.dual_pdf_path = dual_watermark_pdf
-    except Exception:
-        result.dual_pdf_path = result.no_watermark_dual_pdf_path
 
     result.original_pdf_path = translation_config.input_file
 
     return result
-
-
-def generate_first_page_with_watermark(
-    mupdf: Document,
-    translation_config: TranslationConfig,
-    doc_il: il_version_1.Document,
-    mediabox_data: dict[int, Any] | None = None,
-) -> (io.BytesIO, io.BytesIO):
-    first_page_doc = Document()
-    first_page_doc.insert_pdf(mupdf, from_page=0, to_page=0)
-
-    il_only_first_page_doc = il_version_1.Document()
-    il_only_first_page_doc.total_pages = 1
-    il_only_first_page_doc.page = [copy.deepcopy(doc_il.page[0])]
-
-    watermarked_config = copy.copy(translation_config)
-    watermarked_config.watermark_output_mode = WatermarkOutputMode.Watermarked
-    try:
-        watermarked_config.progress_monitor.disable = True
-        watermarked_temp_pdf_path = watermarked_config.get_working_file_path(
-            "watermarked_temp_input.pdf"
-        )
-        safe_save(first_page_doc, watermarked_temp_pdf_path)
-
-        Typesetting(watermarked_config).typsetting_document(il_only_first_page_doc)
-        pdf_creater = PDFCreater(
-            watermarked_temp_pdf_path.as_posix(),
-            il_only_first_page_doc,
-            watermarked_config,
-            mediabox_data,
-        )
-        result = pdf_creater.write(watermarked_config)
-        mono_pdf_bytes = None
-        dual_pdf_bytes = None
-        if result.mono_pdf_path:
-            mono_pdf_bytes = io.BytesIO()
-            with Path(result.mono_pdf_path).open("rb") as f:
-                mono_pdf_bytes.write(f.read())
-            result.mono_pdf_path.unlink()
-            mono_pdf_bytes.seek(0)
-
-        if result.dual_pdf_path:
-            dual_pdf_bytes = io.BytesIO()
-            with Path(result.dual_pdf_path).open("rb") as f:
-                dual_pdf_bytes.write(f.read())
-            result.dual_pdf_path.unlink()
-            dual_pdf_bytes.seek(0)
-
-        return mono_pdf_bytes, dual_pdf_bytes
-    finally:
-        watermarked_config.progress_monitor.disable = False
-
-
-def merge_watermark_doc(
-    no_watermark_pdf_path: pathlib.PosixPath,
-    watermark_first_page_pdf_bytes: io.BytesIO,
-    translation_config: TranslationConfig,
-) -> pathlib.PosixPath:
-    if not no_watermark_pdf_path.exists():
-        raise FileNotFoundError(
-            f"no_watermark_pdf_path not found: {no_watermark_pdf_path}"
-        )
-    if not watermark_first_page_pdf_bytes:
-        raise FileNotFoundError(
-            f"watermark_first_page_pdf_bytes not found: {watermark_first_page_pdf_bytes}"
-        )
-
-    no_watermark_pdf = Document(no_watermark_pdf_path.as_posix())
-    no_watermark_pdf.delete_page(0)
-
-    watermark_first_page_pdf = Document("pdf", watermark_first_page_pdf_bytes)
-    no_watermark_pdf.insert_pdf(
-        watermark_first_page_pdf, from_page=0, to_page=0, start_at=0
-    )
-
-    new_save_path = no_watermark_pdf_path.with_name(
-        no_watermark_pdf_path.name.replace(".no_watermark", "")
-    )
-
-    PDFCreater.save_pdf_with_timeout(
-        no_watermark_pdf,
-        new_save_path.as_posix(),
-        translation_config=translation_config,
-        clean=not translation_config.skip_clean,
-    )
-    return new_save_path
 
 
