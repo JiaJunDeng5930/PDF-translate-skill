@@ -167,8 +167,10 @@ pdf_translate.yaml
   -> pause at term/translation task
   -> write current_translation.yaml
   -> validate accepted answer
-  -> replay answer by task hash
-  -> generate translated PDF
+  -> store answer patch by task hash
+  -> repeat until selected pages are complete
+  -> final replay into IL
+  -> generate translated PDF once
 ```
 
 ## Limitations

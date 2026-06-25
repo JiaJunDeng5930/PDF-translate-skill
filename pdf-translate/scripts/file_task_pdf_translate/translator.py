@@ -36,6 +36,24 @@ class FileTaskTranslator(BaseTranslator):
         active_page = page_plan.get("active_page")
         return active_page if isinstance(active_page, int) else None
 
+    def _task_page_from_items(self, items: list[dict]) -> int | list[int] | None:
+        active_page = self._active_page()
+        if active_page is not None:
+            return active_page
+
+        pages: list[int] = []
+        for item in items:
+            page = item.get("page")
+            if page is None:
+                page = (item.get("hygiene_context") or {}).get("page_number")
+                if isinstance(page, int):
+                    page += 1
+            if isinstance(page, int) and page not in pages:
+                pages.append(page)
+        if len(pages) == 1:
+            return pages[0]
+        return pages or None
+
     def do_llm_translate(self, text, rate_limit_params: dict = None):
         if text is None:
             return ""
@@ -72,34 +90,47 @@ class FileTaskTranslator(BaseTranslator):
         raise RuntimeError("unsupported file-task LLM prompt shape")
 
     def _translation_task_from_items(self, items: list[dict]) -> dict:
-        active_page = self._active_page()
+        task_page = self._task_page_from_items(items)
+        context_page = task_page if isinstance(task_page, int) else None
         blocks = []
         for index, item in enumerate(items):
             original_source = item.get("input", "")
             context = item.get("hygiene_context")
             display_source = normalize_extracted_pdf_text(original_source, context)
             context_before = (
-                self._previous_page_context(display_source) if index == 0 else None
+                self._previous_page_context(display_source, context_page)
+                if index == 0
+                else None
             )
-            blocks.append(
+            block = {
+                "id": item.get("id", index),
+                "source": display_source,
+                "original_source": original_source,
+                "required_placeholders": placeholder_sequence(display_source),
+                "layout_label": item.get("layout_label"),
+                "text_role": item.get("text_role"),
+                "hygiene_context": context,
+                "context_before": context_before,
+            }
+            page = item.get("page")
+            if isinstance(page, int):
+                block["page"] = page
+            blocks.append(block)
+        _repair_translation_block_boundaries(blocks)
+        for block in blocks:
+            block["source_hash"] = stable_hash(
                 {
-                    "source": display_source,
-                    "original_source": original_source,
-                    "required_placeholders": placeholder_sequence(display_source),
-                    "layout_label": item.get("layout_label"),
-                    "text_role": item.get("text_role"),
-                    "hygiene_context": context,
-                    "context_before": context_before,
+                    "source": block["source"],
+                    "original_source": block["original_source"],
                 }
             )
-        _repair_translation_block_boundaries(blocks)
 
         hash_blocks = [_hashable_block(block) for block in blocks]
         hash_payload = {
             "task_type": "translate",
             "lang_in": self.state["config"]["lang_in"],
             "lang_out": self.state["config"]["lang_out"],
-            "page": active_page,
+            "page": task_page,
             "blocks": hash_blocks,
         }
         task_hash = stable_hash(hash_payload)
@@ -108,12 +139,11 @@ class FileTaskTranslator(BaseTranslator):
             "task_hash": task_hash,
             "lang_in": self.state["config"]["lang_in"],
             "lang_out": self.state["config"]["lang_out"],
-            "page": active_page,
+            "page": task_page,
             "blocks": blocks,
         }
 
-    def _previous_page_context(self, source: str) -> str | None:
-        active_page = self._active_page()
+    def _previous_page_context(self, source: str, active_page: int | None) -> str | None:
         if not active_page or active_page <= 1:
             return None
         stripped = source.lstrip()

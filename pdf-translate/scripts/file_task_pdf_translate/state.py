@@ -36,7 +36,6 @@ class WorkspacePaths:
     rejected: Path
     output: Path
     working: Path
-    page_outputs: Path
     lock: Path
 
 
@@ -64,7 +63,6 @@ def paths_for(root: Path) -> WorkspacePaths:
         rejected=private / "rejected_answers",
         output=root / "output",
         working=private / "babeldoc_work",
-        page_outputs=private / "page_outputs",
         lock=private / "advance.lock",
     )
 
@@ -77,7 +75,6 @@ def ensure_dirs(paths: WorkspacePaths) -> None:
         paths.rejected,
         paths.output,
         paths.working,
-        paths.page_outputs,
     ):
         path.mkdir(parents=True, exist_ok=True)
 

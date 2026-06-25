@@ -7,6 +7,8 @@
 # file-backed pdf-translate skill task workflow.
 # Modified on 2026-06-15 to carry text roles and geometry hygiene context
 # through file-backed translation batches.
+# Modified on 2026-06-25 to include 1-based source pages in file-backed
+# translation tasks for final replay.
 
 import json
 import logging
@@ -720,6 +722,9 @@ class ILTranslatorLLMOnly:
                     "hygiene_context": hygiene_context,
                 }
                 if is_file_task_workflow(self.translation_config):
+                    page_number = getattr(page, "page_number", None)
+                    if isinstance(page_number, int):
+                        obj["page"] = page_number + 1
                     text_role = classify_text_role(
                         input_text[0],
                         paragraph.layout_label,

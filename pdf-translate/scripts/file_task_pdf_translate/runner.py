@@ -91,106 +91,90 @@ def advance(workspace: Path | None = None) -> dict:
         if state.get("status") == "done":
             return _done_response(paths, state, validation.warnings)
 
-        if state.get("status") == "shard_ready":
-            return _finalize_shard_ready(paths, state, validation.warnings)
-
         if _page_plan_complete(state):
-            state["status"] = "done"
-            state["pending_task_hash"] = None
-            state.pop("last_error", None)
-            write_json(paths.state, state)
-            _write_progress_snapshot(
-                paths,
-                _annotate_progress_with_page_plan(
-                    _terminal_pipeline_progress(),
-                    state,
-                ),
-            )
-            append_trace(
-                paths,
-                "pdf_written",
-                output_pdf=_primary_output_pdf(state),
-                output_pdfs=state.get("output_pdfs", {}),
-            )
-            return _done_response(paths, state, validation.warnings)
+            return _run_final_pdf_generation(paths, state, validation.warnings)
 
-        translator = FileTaskTranslator(paths, state)
-        _record_memory_sample(paths, "load_model_start")
-        config = _build_translation_config(paths, state, translator)
-        _record_memory_sample(paths, "load_model")
-        config.file_task_workflow = True
-        config.progress_change_callback = (
-            lambda **event: _record_pipeline_progress(paths, event)
+        result, response = _run_babeldoc(
+            paths,
+            state,
+            defer_pdf_output=True,
         )
-        state["status"] = "running"
-        write_json(paths.state, state)
+        if response is not None:
+            return response
+        return _mark_active_page_extracted(paths, state, validation.warnings)
 
-        try:
-            result = translate(config)
-        except FileTaskPending:
-            state = read_json(paths.state, state)
-            return _pending_response(
-                paths,
-                state,
-                ValidationResult(
-                    False,
-                    state.get("status", "needs_ai_edit"),
-                    [],
-                    [],
-                ),
-            )
-        except Exception as exc:
-            state["status"] = "error"
-            state["last_error"] = str(exc)
-            write_json(paths.state, state)
-            append_trace(
-                paths,
-                "advance_error",
-                error=str(exc),
-                traceback=traceback.format_exc(limit=8),
-            )
-            return {
-                "status": "error",
-                "editable_file": None,
-                "instruction": "Fix the runtime error reported in validation_errors.",
-                "progress": _progress(paths, state),
-                "validation_errors": [str(exc)],
-                "validation_warnings": [],
-                "trace_tail": trace_tail(paths),
-                "output_pdf": None,
-                "output_pdfs": {},
-            }
-        finally:
-            shutdown_file_task_runtime()
 
-        shard_output_pdfs, _shard_output_pdf = _collect_output_pdfs(
-            result,
-            state["config"],
+def _run_babeldoc(
+    paths,
+    state: dict,
+    *,
+    defer_pdf_output: bool,
+) -> tuple[object | None, dict | None]:
+    translator = FileTaskTranslator(paths, state)
+    _record_memory_sample(paths, "load_model_start")
+    config = _build_translation_config(
+        paths,
+        state,
+        translator,
+        defer_pdf_output=defer_pdf_output,
+    )
+    _record_memory_sample(paths, "load_model")
+    config.file_task_workflow = True
+    config.progress_change_callback = (
+        lambda **event: _record_pipeline_progress(paths, event)
+    )
+    state["status"] = "running" if defer_pdf_output else "finalizing"
+    write_json(paths.state, state)
+
+    try:
+        return translate(config), None
+    except FileTaskPending:
+        current_state = read_json(paths.state, state)
+        return None, _pending_response(
+            paths,
+            current_state,
+            ValidationResult(
+                False,
+                current_state.get("status", "needs_ai_edit"),
+                [],
+                [],
+            ),
         )
-        state["status"] = "shard_ready"
-        state["pending_task_hash"] = None
-        state["shard_ready"] = {
-            "page": _active_page(state),
-            "output_pdfs": shard_output_pdfs,
-        }
+    except Exception as exc:
+        state["status"] = "error"
+        state["last_error"] = str(exc)
         write_json(paths.state, state)
         append_trace(
             paths,
-            "shard_ready",
-            page=_active_page(state),
-            output_pdfs=shard_output_pdfs,
+            "advance_error",
+            error=str(exc),
+            traceback=traceback.format_exc(limit=8),
         )
-        return _finalize_shard_ready(paths, state, validation.warnings)
+        return None, {
+            "status": "error",
+            "editable_file": None,
+            "instruction": "Fix the runtime error reported in validation_errors.",
+            "progress": _progress(paths, state),
+            "validation_errors": [str(exc)],
+            "validation_warnings": [],
+            "trace_tail": trace_tail(paths),
+            "output_pdf": None,
+            "output_pdfs": {},
+        }
+    finally:
+        shutdown_file_task_runtime()
 
 
-def _finalize_shard_ready(paths, state: dict, warnings: list[str]) -> dict:
-    shard_ready = state.get("shard_ready") or {}
-    shard_output_pdfs = dict(shard_ready.get("output_pdfs") or {})
-    output_pdfs, output_pdf = _merge_page_output_pdfs(
+def _run_final_pdf_generation(paths, state: dict, warnings: list[str]) -> dict:
+    result, response = _run_babeldoc(
         paths,
         state,
-        shard_output_pdfs,
+        defer_pdf_output=False,
     )
+    if response is not None:
+        return response
+
+    output_pdfs, output_pdf = _collect_output_pdfs(result, state["config"])
     output_errors = _validate_output_pdfs(output_pdfs)
     if output_errors:
         state["status"] = "error"
@@ -211,29 +195,32 @@ def _finalize_shard_ready(paths, state: dict, warnings: list[str]) -> dict:
             "output_pdfs": output_pdfs,
         }
 
-    completed_page, next_page = mark_active_page_completed(state)
+    state["status"] = "done"
     state["pending_task_hash"] = None
     state["output_pdfs"] = output_pdfs
-    state.pop("shard_ready", None)
     state.pop("last_error", None)
-    if next_page is None:
-        state["status"] = "done"
-        write_json(paths.state, state)
-        _write_progress_snapshot(
-            paths,
-            _annotate_progress_with_page_plan(
-                _terminal_pipeline_progress(),
-                state,
-            ),
-        )
-        append_trace(
-            paths,
-            "pdf_written",
-            output_pdf=output_pdf,
-            output_pdfs=output_pdfs,
-        )
-        return _done_response(paths, state, warnings)
+    write_json(paths.state, state)
+    _write_progress_snapshot(
+        paths,
+        _annotate_progress_with_page_plan(
+            _terminal_pipeline_progress(read_json(paths.progress, None)),
+            state,
+        ),
+    )
+    append_trace(
+        paths,
+        "pdf_written",
+        output_pdf=output_pdf,
+        output_pdfs=output_pdfs,
+    )
+    return _done_response(paths, state, warnings)
 
+
+def _mark_active_page_extracted(paths, state: dict, warnings: list[str]) -> dict:
+    completed_page, next_page = mark_active_page_completed(state)
+    state["pending_task_hash"] = None
+    state["output_pdfs"] = state.get("output_pdfs", {})
+    state.pop("last_error", None)
     state["status"] = "page_completed"
     state["last_completed_page"] = completed_page
     state["next_page"] = next_page
@@ -250,7 +237,7 @@ def _finalize_shard_ready(paths, state: dict, warnings: list[str]) -> dict:
         "page_completed",
         page=completed_page,
         next_page=next_page,
-        output_pdfs=output_pdfs,
+        output_pdfs=state["output_pdfs"],
     )
     return _page_completed_response(
         paths,
@@ -265,6 +252,7 @@ def _build_translation_config(
     paths,
     state: dict,
     translator: FileTaskTranslator,
+    defer_pdf_output: bool = False,
 ) -> TranslationConfig:
     config = state["config"]
     no_dual, no_mono = output_flags(config["output_mode"])
@@ -273,9 +261,8 @@ def _build_translation_config(
     output_dir = paths.output
     working_dir = paths.working
     if active_page is not None:
-        shard_name = f"page_{active_page:04d}"
-        output_dir = paths.page_outputs / shard_name
-        working_dir = paths.working / shard_name
+        page_work_dir_name = f"page_{active_page:04d}"
+        working_dir = paths.working / page_work_dir_name
     return TranslationConfig(
         translator=translator,
         input_file=config["input_pdf"],
@@ -292,6 +279,7 @@ def _build_translation_config(
         add_formula_placehold_hint=config["add_formula_placehold_hint"],
         primary_font_family=config["primary_font_family"],
         report_interval=2.0,
+        defer_pdf_output=defer_pdf_output,
     )
 
 
@@ -377,15 +365,22 @@ def _page_completed_response(
     next_page: int | None,
     warnings: list[str],
 ) -> dict:
+    if next_page is None:
+        instruction = (
+            f"Page {completed_page} is complete. Run advance again to generate "
+            "the final PDF."
+        )
+    else:
+        instruction = (
+            f"Page {completed_page} is complete. Run advance again to start "
+            f"page {next_page}."
+        )
     return {
         "status": "page_completed",
         "completed_page": completed_page,
         "next_page": next_page,
         "editable_file": None,
-        "instruction": (
-            f"Page {completed_page} is complete. Run advance again to start "
-            f"page {next_page}."
-        ),
+        "instruction": instruction,
         "progress": _progress(paths, state),
         "validation_errors": [],
         "validation_warnings": warnings,
@@ -424,7 +419,7 @@ def _progress(paths, state: dict) -> dict:
     accepted_tasks = accepted_answer_count(paths)
     pipeline_progress = read_json(paths.progress, None)
     if state.get("status") == "done":
-        pipeline_progress = _terminal_pipeline_progress()
+        pipeline_progress = _terminal_pipeline_progress(pipeline_progress)
     elif pipeline_progress:
         pipeline_progress["paused_for_ai"] = state.get("status") in {
             "needs_ai_edit",
@@ -515,8 +510,8 @@ def _write_progress_snapshot(paths, progress: dict) -> None:
             logger.debug("failed to trace progress write failure", exc_info=True)
 
 
-def _terminal_pipeline_progress() -> dict:
-    return {
+def _terminal_pipeline_progress(previous: dict | None = None) -> dict:
+    progress = {
         "event_type": "done",
         "stage": "Done",
         "stage_progress": 100.0,
@@ -528,6 +523,11 @@ def _terminal_pipeline_progress() -> dict:
         "paused_for_ai": False,
         "updated_at": datetime.now().isoformat(timespec="seconds"),
     }
+    if previous:
+        for key in ("peak_memory_mb", "memory_stages"):
+            if key in previous:
+                progress[key] = previous[key]
+    return progress
 
 
 def _page_completed_pipeline_progress(completed_page: int | None) -> dict:
@@ -574,9 +574,9 @@ def _annotate_progress_with_page_plan(
     )
     annotated["page_progress"] = page_progress
     if page_progress:
-        annotated["shard_stage_current"] = progress.get("stage_current")
-        annotated["shard_stage_total"] = progress.get("stage_total")
-        annotated["shard_stage_progress"] = progress.get("stage_progress")
+        annotated["active_stage_current"] = progress.get("stage_current")
+        annotated["active_stage_total"] = progress.get("stage_total")
+        annotated["active_stage_progress"] = progress.get("stage_progress")
         annotated["stage_overall_progress"] = progress.get("overall_progress")
         annotated["workflow_current"] = page_progress.get("workflow_current")
         annotated["workflow_total"] = page_progress.get("workflow_total")
@@ -754,85 +754,9 @@ def _collect_output_pdfs(result, config: dict) -> tuple[dict[str, str], str | No
     return output_pdfs, next(iter(output_pdfs.values()), None)
 
 
-def _merge_page_output_pdfs(
-    paths,
-    state: dict,
-    shard_output_pdfs: dict[str, str],
-) -> tuple[dict[str, str], str | None]:
-    if not shard_output_pdfs:
-        return {}, None
-    active_page = _active_page(state)
-    if active_page is None:
-        return shard_output_pdfs, next(iter(shard_output_pdfs.values()))
-
-    merged: dict[str, str] = {}
-    existing_outputs = state.get("output_pdfs") or {}
-    source_pdf = Path(state["config"]["input_pdf"])
-    for label, shard_path_text in shard_output_pdfs.items():
-        shard_path = Path(shard_path_text)
-        output_path = paths.output / shard_path.name
-        base_path = Path(existing_outputs.get(label) or source_pdf)
-        _replace_pdf_page(
-            base_path=base_path,
-            shard_path=shard_path,
-            output_path=output_path,
-            page_number=active_page,
-        )
-        merged[label] = str(output_path)
-    primary_key = _primary_output_key(state["config"])
-    primary = merged.get(primary_key)
-    if primary is not None:
-        return merged, primary
-    return merged, next(iter(merged.values()), None)
-
-
-def _replace_pdf_page(
-    base_path: Path,
-    shard_path: Path,
-    output_path: Path,
-    page_number: int,
-) -> None:
-    import pymupdf
-
-    page_index = page_number - 1
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = output_path.with_name(f".{output_path.name}.page-{page_number}.tmp.pdf")
-    if tmp_path.exists():
-        tmp_path.unlink()
-
-    base_document = pymupdf.open(base_path)
-    shard_document = pymupdf.open(shard_path)
-    try:
-        if page_index >= base_document.page_count:
-            raise RuntimeError(
-                f"target page {page_number} exceeds base PDF page count "
-                f"{base_document.page_count}"
-            )
-        if shard_document.page_count == 1:
-            shard_index = 0
-        else:
-            shard_index = page_index
-        if shard_index >= shard_document.page_count:
-            raise RuntimeError(
-                f"target page {page_number} is missing from shard PDF {shard_path}"
-            )
-        base_document.delete_page(page_index)
-        base_document.insert_pdf(
-            shard_document,
-            from_page=shard_index,
-            to_page=shard_index,
-            start_at=page_index,
-        )
-        base_document.save(tmp_path, garbage=4, deflate=True)
-    finally:
-        shard_document.close()
-        base_document.close()
-    tmp_path.replace(output_path)
-
-
 def _validate_output_pdfs(output_pdfs: dict[str, str]) -> list[str]:
     if not output_pdfs:
-        return []
+        return ["output PDF was not generated"]
 
     import pymupdf
 

@@ -7,6 +7,8 @@
 # the pdf-translate skill advance loop.
 # Modified on 2026-06-22 to remove visible first-page watermark generation and
 # keep final output PDFs on the clean path.
+# Modified on 2026-06-25 to let file-backed page extraction defer PDF output
+# until the final replay run.
 
 import copy
 import logging
@@ -280,6 +282,8 @@ def get_translation_stage(
             should_remove.append(DetectScannedFile.stage_name)
         if translation_config.skip_translation:
             should_remove.append(ILTranslator.stage_name)
+        if translation_config.defer_pdf_output:
+            should_remove.extend([Typesetting.stage_name, PDFCreater.stage_name])
 
     result = [x for x in result if x[0] not in should_remove]
     return result
@@ -801,6 +805,9 @@ def _do_translate_single(
         logger.debug(f"finish ILTranslator from {temp_pdf_path}")
     else:
         logger.info("skip ILTranslator")
+
+    if translation_config.defer_pdf_output:
+        return TranslateResult(None, None)
 
     if translation_config.debug:
         json_converter.write_json(

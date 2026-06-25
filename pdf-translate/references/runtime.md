@@ -13,18 +13,17 @@ Preparation-stage config:
 Translation-stage state:
 
 - `current_translation.yaml`: the only AI-editable file while a task is pending.
-- `.pdf_translate/state.json`: business state only: frozen config, pending task hash, status, shard-ready metadata, final output map, advance count, and `page_plan`.
+- `.pdf_translate/state.json`: business state only: frozen config, pending task hash, status, final output map, advance count, and `page_plan`.
 - `.pdf_translate/progress.json`: latest pipeline progress snapshot.
 - `.pdf_translate/tasks/`: pending task snapshots keyed by task hash.
 - `.pdf_translate/accepted_answers/`: accepted editable files and JSON answers replayed into the internal PDF pipeline.
 - `.pdf_translate/rejected_answers/`: damaged editable files archived before template restoration.
-- `.pdf_translate/page_outputs/`: private per-page shard PDFs before page replacement into final outputs.
 - `.pdf_translate/trace.jsonl`: compact config, progress, validation, answer, and output events.
 - `.pdf_translate/advance.lock`: PID and timestamp metadata for the active advance process. A live PID returns `locked`; a missing PID is recovered as stale and traced before the run continues.
 
-The runtime re-enters the internal PDF pipeline on each advance and replays accepted answers by stable task hash. The frozen `pages` config defines the target page set. `state.json` stores `page_plan.target_pages`, `page_plan.active_page`, and `page_plan.completed_pages` as the runtime cursor. BabelDOC receives a single-page `pages` value for the active shard. After BabelDOC writes the shard PDF, `state.status` becomes `shard_ready` with the private shard `output_pdfs`. Finalization then merges the shard into public outputs and marks `done` or `page_completed`. If a process stops after `shard_ready`, the next advance finalizes that shard without rerunning translation. A completed shard returns `status: page_completed`, `completed_page`, `next_page`, and the merged `output_pdfs`; the next advance starts `next_page`. Debug IL dumps use JSON only.
+The runtime re-enters the internal PDF pipeline on each advance and replays accepted answers by stable task hash. The frozen `pages` config defines the target page set. `state.json` stores `page_plan.target_pages`, `page_plan.active_page`, and `page_plan.completed_pages` as the runtime cursor. BabelDOC receives a single-page `pages` value while `active_page` is set. Page advances stop after translation replay and before typesetting or PDF generation, then mark the active page complete. A completed page returns `status: page_completed`, `completed_page`, `next_page`, and empty `output_pdfs`; the next advance starts `next_page`.
 
-Each completed shard writes private PDFs under `.pdf_translate/page_outputs/`. The public output in `output/` is produced by replacing only `active_page` in the original or cumulative PDF with the corresponding page from the shard PDF. Pages outside `page_plan.target_pages` remain sourced from the original PDF.
+Accepted answers are the durable translation patches. Each pending snapshot records the page, block id, source hash, original source, normalized source, placeholders, and layout context. After all target pages are complete, the next advance runs the full selected page set through BabelDOC once, replays accepted answers into IL, then performs typesetting, font mapping, ToUnicode repair, and PDF generation. The public output in `output/` is written only in that final replay run. Pages outside `page_plan.target_pages` remain sourced from the original PDF.
 
 The synchronous BabelDOC progress monitor writes the latest pipeline stage into `.pdf_translate/progress.json`. Stage starts, ends, AI pauses, page completion, and memory summaries are also recorded in `trace.jsonl`. `stage_progress` is the current BabelDOC stage. `workflow_progress` and `page_progress.overall_progress` are business progress derived from committed page cursor state only. Running stages and pending AI tasks keep active-page stage percentages in `active_page_stage_progress`; they do not advance workflow progress. Only `done` and `page_completed` report terminal workflow progress. `paused_for_ai` is derived from `status in {"needs_ai_edit", "needs_ai_fix"}`. Historical trace events are audit data.
 

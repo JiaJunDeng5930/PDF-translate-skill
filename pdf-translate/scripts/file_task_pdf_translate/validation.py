@@ -216,7 +216,9 @@ def _build_translation_answer(
             continue
         if block.translation.strip() == block.source.strip():
             warnings.append(f"translation block {index} is identical to source")
-        answer.append({"id": index - 1, "output": block.translation})
+        answer.append(
+            {"id": snapshot.get("id", index - 1), "output": block.translation}
+        )
     return answer, errors, warnings
 
 
