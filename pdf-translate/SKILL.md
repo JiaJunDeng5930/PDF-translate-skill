@@ -7,6 +7,12 @@ description: Use this skill to translate local academic or technical PDFs with a
 
 ## Prepare
 
+Install the Python runtime dependencies in the active environment before preparing assets or running advance:
+
+```text
+python -m pip install -r "<skill-dir>/scripts/requirements.txt"
+```
+
 Prepare runtime assets before translating:
 
 ```text
@@ -47,6 +53,10 @@ Run the bundled no-argument script from the configured PDF workspace:
 python "<skill-dir>/scripts/advance.py"
 ```
 
+The AI agent executes this loop manually according to this skill. Run `advance.py` directly, inspect the returned status, edit the requested YAML file by hand, then run `advance.py` again.
+
+Do not wrap `advance.py` with custom automation, schedulers, retry loops, watchers, batch controllers, or scripts outside this skill.
+
 Follow the returned `status`:
 
 - `config_error`: fix `pdf_translate.yaml`, then run advance again.
@@ -63,7 +73,9 @@ After a pending task exists, the AI-editable surface is `current_translation.yam
 
 The editable file is YAML. Keep every `source` field unchanged. Preserve placeholders such as `<b1>` and `</b1>` exactly, in the same order. These placeholders represent formulas, superscripts, affiliation numbers, protected content, or PDF layout fragments.
 
-For translation tasks, write the translation in the configured `lang_out`.
+For translation tasks, write the translation in the configured `lang_out` yourself. Use the active AI agent's own language work for the translation text.
+
+Do not call other models, translation engines, translator packages, browser translation, cloud translation APIs, or local translation services for the translation text.
 
 ```yaml
 task: translate
