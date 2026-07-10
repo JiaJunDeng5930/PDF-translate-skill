@@ -474,6 +474,7 @@ class PagePlanRegressionTests(unittest.TestCase):
         self.assertEqual(plan["target_page_ranges"], [[1, 1_000_000]])
         self.assertEqual(plan["target_count"], 1_000_000)
         self.assertEqual(plan["completed_count"], 0)
+        self.assertEqual(plan["rendered_count"], 0)
         self.assertLess(len(json.dumps(plan)), 256)
         self.assertNotIn("target_pages", plan)
         self.assertNotIn("completed_pages", plan)
@@ -510,6 +511,7 @@ class PagePlanRegressionTests(unittest.TestCase):
         self.assertEqual(state["page_plan"]["target_count"], 3)
         self.assertEqual(state["page_plan"]["active_page"], 1)
         self.assertEqual(state["page_plan"]["completed_count"], 0)
+        self.assertEqual(state["page_plan"]["rendered_count"], 0)
 
         completed, next_page = mark_active_page_completed(state)
 
@@ -517,6 +519,30 @@ class PagePlanRegressionTests(unittest.TestCase):
         self.assertEqual(next_page, 2)
         self.assertEqual(state["page_plan"]["active_page"], 2)
         self.assertEqual(state["page_plan"]["completed_count"], 1)
+        self.assertEqual(state["page_plan"]["rendered_count"], 1)
+
+    def test_legacy_page_plan_preserves_accepted_cursor_for_materialization(self) -> None:
+        from file_task_pdf_translate.state import ensure_page_plan
+
+        state = {
+            "status": "page_completed",
+            "config": {"pages": None},
+            "page_plan": {
+                "source_page_count": 3,
+                "target_pages": [1, 2, 3],
+                "active_page": 3,
+                "completed_pages": [1, 2],
+            },
+        }
+
+        ensure_page_plan(state, 3)
+
+        plan = state["page_plan"]
+        self.assertEqual(plan["completed_count"], 2)
+        self.assertEqual(plan["rendered_count"], 0)
+        self.assertEqual(plan["active_page"], 1)
+        self.assertNotIn("target_pages", plan)
+        self.assertNotIn("completed_pages", plan)
 
     def test_compact_page_ranges_preserve_selection_order_and_deduplicate(self) -> None:
         from file_task_pdf_translate.state import page_at_target_index
@@ -721,6 +747,7 @@ add_formula_placehold_hint: true
                 "target_count": 2,
                 "active_page": 1,
                 "completed_count": 0,
+                "rendered_count": 0,
             },
         }
 
@@ -1150,6 +1177,39 @@ add_formula_placehold_hint: true
 
         self.assertEqual(result["status"], "done")
         self.assertEqual(Path(result["output_pdf"]), public_output)
+
+    def test_both_publish_preflights_all_outputs_before_moving(self) -> None:
+        from file_task_pdf_translate.runner import _publish_outputs
+        from file_task_pdf_translate.state import ensure_dirs
+        from file_task_pdf_translate.state import paths_for
+
+        workspace = self.tmp
+        source_pdf = workspace / "paper.pdf"
+        write_test_pdf(source_pdf, ["source"])
+        paths = paths_for(workspace)
+        ensure_dirs(paths)
+        write_test_pdf(paths.assembled / "mono.pdf", ["translated"])
+        state = {
+            "status": "page_completed",
+            "config": {
+                "input_pdf": str(source_pdf),
+                "lang_out": "zh-CN",
+                "output_mode": "both",
+            },
+            "page_plan": {
+                "source_page_count": 1,
+                "target_page_ranges": [[1, 1]],
+                "target_count": 1,
+                "active_page": None,
+                "completed_count": 1,
+            },
+        }
+
+        result = _publish_outputs(paths, state, [])
+
+        self.assertEqual(result["status"], "error")
+        self.assertTrue((paths.assembled / "mono.pdf").exists())
+        self.assertFalse((paths.output / "paper.zh-CN.mono.pdf").exists())
 
     def test_progress_snapshot_reports_business_page_cursor(self) -> None:
         from file_task_pdf_translate.runner import _record_pipeline_progress

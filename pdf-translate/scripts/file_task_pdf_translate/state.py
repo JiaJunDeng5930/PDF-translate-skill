@@ -254,18 +254,39 @@ def ensure_page_plan(
         completed_count = plan.get("completed_count")
         if not isinstance(completed_count, int):
             completed_count = 0
+        rendered_count = plan.get("rendered_count")
+        if not isinstance(rendered_count, int):
+            rendered_count = completed_count
     else:
         completed_count = 0
+        rendered_count = 0
+        legacy_target_pages = plan.get("target_pages")
+        legacy_selection_matches = (
+            isinstance(legacy_target_pages, list)
+            and len(legacy_target_pages) == target_count
+            and all(
+                page == page_at_target_index(target_page_ranges, index)
+                for index, page in enumerate(legacy_target_pages)
+            )
+        )
+        if legacy_selection_matches:
+            for index, page in enumerate(plan.get("completed_pages") or []):
+                if page != page_at_target_index(target_page_ranges, index):
+                    break
+                completed_count += 1
     completed_count = min(max(completed_count, 0), target_count)
+    rendered_count = min(max(rendered_count, 0), target_count)
     if state.get("status") == "done":
         completed_count = target_count
+        rendered_count = target_count
 
     compact_plan = {
         "source_page_count": source_page_count,
         "target_page_ranges": target_page_ranges,
         "target_count": target_count,
-        "active_page": page_at_target_index(target_page_ranges, completed_count),
+        "active_page": page_at_target_index(target_page_ranges, rendered_count),
         "completed_count": completed_count,
+        "rendered_count": rendered_count,
     }
     if source_identity is not None:
         compact_plan["source_identity"] = source_identity
@@ -283,12 +304,17 @@ def mark_active_page_completed(state: dict) -> tuple[int | None, int | None]:
     if not isinstance(active_page, int):
         return None, None
 
-    completed_count = int(plan.get("completed_count", 0)) + 1
-    completed_count = min(completed_count, int(plan.get("target_count", 0)))
+    target_count = int(plan.get("target_count", 0))
+    rendered_count = int(
+        plan.get("rendered_count", plan.get("completed_count", 0))
+    ) + 1
+    rendered_count = min(rendered_count, target_count)
+    completed_count = max(int(plan.get("completed_count", 0)), rendered_count)
+    plan["rendered_count"] = rendered_count
     plan["completed_count"] = completed_count
     next_page = page_at_target_index(
         plan.get("target_page_ranges") or [],
-        completed_count,
+        rendered_count,
     )
     plan["active_page"] = next_page
     return active_page, next_page

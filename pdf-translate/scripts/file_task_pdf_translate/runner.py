@@ -571,17 +571,34 @@ def _publish_outputs(paths, state: dict, warnings: list[str]) -> dict:
     basename = Path(config["input_pdf"]).stem
     output_pdfs = {}
     missing = []
+    publish_paths = {}
+    expected_page_count = int(state["page_plan"]["source_page_count"])
     for mode in output_modes:
         assembled_path = paths.assembled / f"{mode}.pdf"
         output_path = paths.output / f"{basename}.{config['lang_out']}.{mode}.pdf"
-        if assembled_path.exists():
-            assembled_path.replace(output_path)
-        elif not output_path.exists():
+        if not assembled_path.exists() and not output_path.exists():
             missing.append(f"{mode} output PDF is missing: {assembled_path}")
             continue
-        output_pdfs[mode] = str(output_path)
+        candidate_path = assembled_path if assembled_path.exists() else output_path
+        try:
+            actual_page_count = _pdf_page_count(candidate_path)
+        except Exception as exc:
+            missing.append(f"{mode} output PDF could not be inspected: {exc}")
+            continue
+        if actual_page_count != expected_page_count:
+            missing.append(
+                f"{mode} output PDF has {actual_page_count} pages; "
+                f"expected {expected_page_count}"
+            )
+            continue
+        publish_paths[mode] = (assembled_path, output_path)
     if missing:
         return _output_error_response(paths, state, output_pdfs, missing, warnings)
+
+    for mode, (assembled_path, output_path) in publish_paths.items():
+        if assembled_path.exists():
+            assembled_path.replace(output_path)
+        output_pdfs[mode] = str(output_path)
 
     state["status"] = "done"
     state["pending_task_hash"] = None
@@ -721,11 +738,14 @@ def _active_page(state: dict) -> int | None:
 def _page_plan_complete(state: dict) -> bool:
     page_plan = state.get("page_plan") or {}
     target_count = page_plan.get("target_count")
-    completed_count = page_plan.get("completed_count")
+    rendered_count = page_plan.get(
+        "rendered_count",
+        page_plan.get("completed_count"),
+    )
     return (
         isinstance(target_count, int)
         and target_count > 0
-        and completed_count == target_count
+        and rendered_count == target_count
     )
 
 
@@ -963,6 +983,10 @@ def _public_page_plan(state: dict) -> dict | None:
         "target_count": page_plan.get("target_count"),
         "active_page": page_plan.get("active_page"),
         "completed_count": page_plan.get("completed_count"),
+        "rendered_count": page_plan.get(
+            "rendered_count",
+            page_plan.get("completed_count"),
+        ),
     }
 
 
@@ -1019,6 +1043,10 @@ def _page_progress(
         max(int(page_plan.get("completed_count") or 0), 0),
         target_total,
     )
+    rendered_count = min(
+        max(int(page_plan.get("rendered_count", completed_count) or 0), 0),
+        target_total,
+    )
     active_page = page_plan.get("active_page")
     output_mode = (state.get("config") or {}).get("output_mode")
     output_plan = state.get("output_plan") or {}
@@ -1033,14 +1061,16 @@ def _page_progress(
     )
     if state.get("status") == "done":
         completed_count = target_total
+        rendered_count = target_total
         output_completed_count = output_total
         active_page = None
-    workflow_current = completed_count + output_completed_count
+    workflow_current = rendered_count + output_completed_count
     workflow_total = target_total + output_total
     overall = (workflow_current / workflow_total) * 100.0
     return {
         "target_total": target_total,
         "completed_count": completed_count,
+        "rendered_count": rendered_count,
         "active_page": active_page,
         "output_total": output_total,
         "output_completed_count": output_completed_count,
