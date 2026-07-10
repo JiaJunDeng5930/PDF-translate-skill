@@ -63,7 +63,7 @@ Follow the returned `status`:
 - `asset_error`: prepare the configured `asset_dir` with `scripts/download_assets.py`, then run advance again.
 - `needs_ai_edit`: open `editable_file`, edit the YAML fields, save, then run advance again.
 - `needs_ai_fix`: correct the same file according to `validation_errors`, save, then run advance again.
-- `page_completed`: one page's accepted answer patches are complete; run advance again to start `next_page` or generate the final PDF when all pages are complete.
+- `page_completed`: one bounded page step is complete. Run advance again for `next_page`; during output assembly, follow `next_finalization_page`.
 - `done`: deliver `output_pdf` and use `output_pdfs` when multiple variants were generated.
 - `error`: inspect `validation_errors` and the trace tail.
 

@@ -36,6 +36,9 @@ class WorkspacePaths:
     rejected: Path
     output: Path
     working: Path
+    page_sources: Path
+    page_outputs: Path
+    assembled: Path
     lock: Path
 
 
@@ -63,6 +66,9 @@ def paths_for(root: Path) -> WorkspacePaths:
         rejected=private / "rejected_answers",
         output=root / "output",
         working=private / "babeldoc_work",
+        page_sources=private / "page_sources",
+        page_outputs=private / "page_outputs",
+        assembled=private / "assembled",
         lock=private / "advance.lock",
     )
 
@@ -75,6 +81,9 @@ def ensure_dirs(paths: WorkspacePaths) -> None:
         paths.rejected,
         paths.output,
         paths.working,
+        paths.page_sources,
+        paths.page_outputs,
+        paths.assembled,
     ):
         path.mkdir(parents=True, exist_ok=True)
 
@@ -125,14 +134,25 @@ def append_trace(paths: WorkspacePaths, event: str, **fields) -> None:
 
 
 def trace_tail(paths: WorkspacePaths, limit: int = 5) -> list[dict]:
-    if not paths.trace.exists():
+    if limit < 1 or not paths.trace.exists():
         return []
-    lines = paths.trace.read_text(encoding="utf-8").splitlines()[-limit:]
+    with paths.trace.open("rb") as handle:
+        handle.seek(0, os.SEEK_END)
+        position = handle.tell()
+        data = b""
+        while position > 0 and data.count(b"\n") <= limit:
+            read_size = min(8192, position)
+            position -= read_size
+            handle.seek(position)
+            data = handle.read(read_size) + data
+    lines = data.splitlines()
+    if position > 0 and lines:
+        lines = lines[1:]
     result = []
-    for line in lines:
+    for line in lines[-limit:]:
         try:
-            result.append(json.loads(line))
-        except json.JSONDecodeError:
+            result.append(json.loads(line.decode("utf-8")))
+        except (UnicodeDecodeError, json.JSONDecodeError):
             continue
     return result
 
@@ -144,18 +164,18 @@ def default_state(config_snapshot: dict) -> dict:
         "pending_task_hash": None,
         "status": "initialized",
         "output_pdfs": {},
+        "accepted_task_count": 0,
         "advance_count": 0,
     }
 
 
-def parse_page_selection(pages: str | None, source_page_count: int) -> list[int]:
+def parse_page_ranges(pages: str | None, source_page_count: int) -> list[list[int]]:
     if source_page_count < 1:
         raise RuntimeError("input PDF has no pages")
     if pages is None or not str(pages).strip():
-        return list(range(1, source_page_count + 1))
+        return [[1, source_page_count]]
 
-    result: list[int] = []
-    seen: set[int] = set()
+    result: list[list[int]] = []
     for raw_part in str(pages).split(","):
         part = raw_part.strip()
         if not part:
@@ -181,58 +201,80 @@ def parse_page_selection(pages: str | None, source_page_count: int) -> list[int]
             raise RuntimeError(
                 f"pages range {part} exceeds input PDF page count {source_page_count}"
             )
-        for page in range(start, end + 1):
-            if page not in seen:
-                result.append(page)
-                seen.add(page)
+
+        pending = [(start, end)]
+        for covered_start, covered_end in result:
+            uncovered = []
+            for pending_start, pending_end in pending:
+                if pending_end < covered_start or covered_end < pending_start:
+                    uncovered.append((pending_start, pending_end))
+                    continue
+                if pending_start < covered_start:
+                    uncovered.append((pending_start, covered_start - 1))
+                if covered_end < pending_end:
+                    uncovered.append((covered_end + 1, pending_end))
+            pending = uncovered
+        result.extend([[range_start, range_end] for range_start, range_end in pending])
     if not result:
         raise RuntimeError("pages selects no input PDF pages")
     return result
 
 
-def ensure_page_plan(state: dict, source_page_count: int) -> bool:
-    target_pages = parse_page_selection(
+def page_at_target_index(page_ranges: list[list[int]], index: int) -> int | None:
+    if index < 0:
+        return None
+    for start, end in page_ranges:
+        range_size = end - start + 1
+        if index < range_size:
+            return start + index
+        index -= range_size
+    return None
+
+
+def page_is_target(page_ranges: list[list[int]], page: int) -> bool:
+    return any(start <= page <= end for start, end in page_ranges)
+
+
+def ensure_page_plan(
+    state: dict,
+    source_page_count: int,
+    source_identity: dict | None = None,
+) -> bool:
+    target_page_ranges = parse_page_ranges(
         (state.get("config") or {}).get("pages"),
         source_page_count,
     )
+    target_count = sum(end - start + 1 for start, end in target_page_ranges)
     plan = state.get("page_plan")
-    if not isinstance(plan, dict) or plan.get("target_pages") != target_pages:
-        completed_pages = target_pages if state.get("status") == "done" else []
-        state["page_plan"] = {
-            "source_page_count": source_page_count,
-            "target_pages": target_pages,
-            "active_page": None if completed_pages else target_pages[0],
-            "completed_pages": completed_pages,
-        }
-        return True
+    if not isinstance(plan, dict):
+        plan = {}
 
-    changed = False
-    completed = [
-        page
-        for page in plan.get("completed_pages", [])
-        if isinstance(page, int) and page in target_pages
-    ]
-    if completed != plan.get("completed_pages", []):
-        plan["completed_pages"] = completed
-        changed = True
-    if state.get("status") == "done" and completed != target_pages:
-        completed = target_pages
-        plan["completed_pages"] = completed
-        changed = True
+    same_selection = plan.get("target_page_ranges") == target_page_ranges
+    if same_selection:
+        completed_count = plan.get("completed_count")
+        if not isinstance(completed_count, int):
+            completed_count = 0
+    else:
+        completed_count = 0
+    completed_count = min(max(completed_count, 0), target_count)
+    if state.get("status") == "done":
+        completed_count = target_count
 
-    if plan.get("source_page_count") != source_page_count:
-        plan["source_page_count"] = source_page_count
-        changed = True
-
-    active_page = plan.get("active_page")
-    remaining = [page for page in target_pages if page not in set(completed)]
-    expected_active = (
-        None if state.get("status") == "done" or not remaining else remaining[0]
-    )
-    if active_page != expected_active:
-        plan["active_page"] = expected_active
-        changed = True
-    return changed
+    compact_plan = {
+        "source_page_count": source_page_count,
+        "target_page_ranges": target_page_ranges,
+        "target_count": target_count,
+        "active_page": page_at_target_index(target_page_ranges, completed_count),
+        "completed_count": completed_count,
+    }
+    if source_identity is not None:
+        compact_plan["source_identity"] = source_identity
+    if state.get("status") == "done":
+        compact_plan["active_page"] = None
+    if compact_plan == plan:
+        return False
+    state["page_plan"] = compact_plan
+    return True
 
 
 def mark_active_page_completed(state: dict) -> tuple[int | None, int | None]:
@@ -241,16 +283,13 @@ def mark_active_page_completed(state: dict) -> tuple[int | None, int | None]:
     if not isinstance(active_page, int):
         return None, None
 
-    completed = list(plan.get("completed_pages") or [])
-    if active_page not in completed:
-        completed.append(active_page)
-    plan["completed_pages"] = completed
-
-    completed_set = set(completed)
-    remaining = [
-        page for page in plan.get("target_pages", []) if page not in completed_set
-    ]
-    next_page = remaining[0] if remaining else None
+    completed_count = int(plan.get("completed_count", 0)) + 1
+    completed_count = min(completed_count, int(plan.get("target_count", 0)))
+    plan["completed_count"] = completed_count
+    next_page = page_at_target_index(
+        plan.get("target_page_ranges") or [],
+        completed_count,
+    )
     plan["active_page"] = next_page
     return active_page, next_page
 
@@ -341,11 +380,16 @@ def save_accepted_answer(
     summary: dict | None = None,
 ):
     answer_file = answer_path(paths, task_hash)
+    answer_is_new = not answer_file.exists()
+    accepted_count = state.get("accepted_task_count")
+    if not isinstance(accepted_count, int):
+        accepted_count = accepted_answer_count(paths)
     write_json(answer_file, answer)
     answer_hash = stable_hash(answer)
     state["pending_task_hash"] = None
     state.pop("pending_page", None)
     state["status"] = "running"
+    state["accepted_task_count"] = accepted_count + int(answer_is_new)
     state.pop("last_error", None)
     write_json(paths.state, state)
     append_trace(

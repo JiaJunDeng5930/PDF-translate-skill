@@ -13,19 +13,26 @@ Preparation-stage config:
 Translation-stage state:
 
 - `current_translation.yaml`: the only AI-editable file while a task is pending.
-- `.pdf_translate/state.json`: business state only: frozen config, pending task hash, status, final output map, advance count, and `page_plan`.
+- `.pdf_translate/state.json`: compact business state: frozen config, pending task hash, status, final output map, counters, `page_plan`, and optional `output_plan`.
 - `.pdf_translate/progress.json`: latest pipeline progress snapshot.
 - `.pdf_translate/tasks/`: pending task snapshots keyed by task hash.
 - `.pdf_translate/accepted_answers/`: accepted editable files and JSON answers replayed into the internal PDF pipeline.
 - `.pdf_translate/rejected_answers/`: damaged editable files archived before template restoration.
+- `.pdf_translate/page_sources/`: cached one-page source PDFs keyed by source page.
+- `.pdf_translate/page_outputs/`: validated one-page mono and dual pipeline outputs.
+- `.pdf_translate/assembled/`: private PDFs updated one page at a time before publication.
 - `.pdf_translate/trace.jsonl`: compact config, progress, validation, answer, and output events.
 - `.pdf_translate/advance.lock`: PID and timestamp metadata for the active advance process. A live PID returns `locked`; a missing PID is recovered as stale and traced before the run continues.
 
-The runtime re-enters the internal PDF pipeline on each advance and replays accepted answers by stable task hash. The frozen `pages` config defines the target page set. `state.json` stores `page_plan.target_pages`, `page_plan.active_page`, and `page_plan.completed_pages` as the runtime cursor. BabelDOC receives a single-page `pages` value while `active_page` is set. Page advances stop after translation replay and before typesetting or PDF generation, then mark the active page complete. A completed page returns `status: page_completed`, `completed_page`, `next_page`, and empty `output_pdfs`; the next advance starts `next_page`.
+The frozen `pages` config defines the target page set. `state.json` stores the compact cursor `page_plan.target_page_ranges`, `target_count`, `active_page`, and `completed_count`; large contiguous ranges stay constant-sized. The first run also freezes the source PDF size, modification timestamp, and page count. Later source drift returns `config_error` before cached pages can be mixed with a changed input.
 
-Accepted answers are the durable translation patches. Each pending snapshot records the page, block id, source hash, original source, normalized source, placeholders, and layout context. After all target pages are complete, the next advance runs the full selected page set through BabelDOC once, replays accepted answers into IL, then performs typesetting, font mapping, ToUnicode repair, and PDF generation. The public output in `output/` is written only in that final replay run. Pages outside `page_plan.target_pages` remain sourced from the original PDF.
+Each selected-page advance gives BabelDOC a cached one-page PDF with `pages: "1"` while `page_plan.active_page` retains the original 1-based page identity. Accepted answers are durable translation patches keyed by stable task hash. When every task for the active page has an accepted answer, the same synchronous run completes typesetting, font mapping, ToUnicode repair, and one-page PDF generation. The runtime validates that page output, incrementally commits mono content into a private copy of the source PDF, and advances the target cursor.
 
-The synchronous BabelDOC progress monitor writes the latest pipeline stage into `.pdf_translate/progress.json`. Stage starts, ends, AI pauses, page completion, and memory summaries are also recorded in `trace.jsonl`. `stage_progress` is the current BabelDOC stage. `workflow_progress` and `page_progress.overall_progress` are business progress derived from committed page cursor state only. Running stages and pending AI tasks keep active-page stage percentages in `active_page_stage_progress`; they do not advance workflow progress. Only `done` and `page_completed` report terminal workflow progress. `paused_for_ai` is derived from `status in {"needs_ai_edit", "needs_ai_fix"}`. Historical trace events are audit data.
+Dual and `both` modes use a second compact cursor in `output_plan`. After selected pages are translated, each `advance` assembles one source page: selected pages use validated dual shards, while unselected pages use the original page on both sides. Mono-only work publishes immediately after the final target page. Public files appear in `output/` only at `done`; every intermediate PDF stays under `.pdf_translate/`. All page and output transitions occur inside the foreground `advance` process.
+
+Heavy parsing, layout, translation replay, typesetting, and PDF creation are bounded to one page per command. Page cursors, accepted-answer counts, progress, and trace-tail reads remain compact as page count and history grow. Initial mono assembly copies the source bytes once, and PDF opens retain the source xref metadata required for random page access. Incremental PDF revisions keep later commits bounded and preserve the original page objects, catalog, links, annotations, and outlines.
+
+The synchronous BabelDOC progress monitor writes the latest pipeline stage into `.pdf_translate/progress.json`. Stage starts, ends, AI pauses, selected-page completion, output-page completion, and memory summaries are also recorded in `trace.jsonl`. `workflow_progress` combines committed target pages with committed output-assembly pages. Running stages and pending AI tasks keep active-page stage percentages in `active_page_stage_progress`; committed cursors alone advance workflow progress. `paused_for_ai` is derived from `status in {"needs_ai_edit", "needs_ai_fix"}`. Historical trace events are audit data, and response tails read only the final records.
 
 The BabelDOC-derived pipeline files with file-task changes are:
 
@@ -49,9 +56,9 @@ Validation invariants:
 - Required placeholder sequences are derived from each block snapshot by exact `<bN>` scanning.
 - Validation compares the saved snapshot sequence with each translation sequence and reports the first mismatch position, expected item, actual item, and local windows.
 - Accepted translation answers replay the translation text as written, including required placeholders.
-- Completed output PDFs are text-scanned for visible `<bN>`, `</bN>`, `{{FORMULA_N}}`, and `{{PROTECTED_N}}` markers before `state.json` is marked `done`.
+- Every generated page shard is text-scanned for visible `<bN>`, `</bN>`, `{{FORMULA_N}}`, and `{{PROTECTED_N}}` markers before it is committed.
 
-PDF generation is owned by the internal pipeline: `high_level.translate()` runs layout parsing, paragraph finding, styles/formulas, IL translation, typesetting, font mapping, and PDF creation.
+Per-page PDF generation is owned by the internal pipeline: `high_level.translate()` runs layout parsing, paragraph finding, styles/formulas, IL translation, typesetting, font mapping, and PDF creation for the isolated active page.
 
 Generated PDFs are clean by default. The bundled pipeline omits the visible BabelDOC first-page watermark path, while BabelDOC metadata attribution remains in the PDF producer metadata.
 
@@ -64,5 +71,5 @@ Runtime assets are prepared outside translation:
 - `scripts/download_assets.py <asset-dir>` downloads the DocLayout ONNX model, fonts, CMap files, and tiktoken cache into the configured directory.
 - `manifest.json` records the expected asset names and SHA3-256 hashes.
 - If `<asset-dir>` already validates against `manifest.json`, `download_assets.py` returns without contacting upstreams. Individual model, font, CMap, and tiktoken groups also skip upstream selection when every expected file already matches its hash.
-- `advance` activates the frozen `asset_dir`, validates `manifest.json` and every required file, then runs the PDF pipeline.
+- Before every pipeline-bearing advance, `advance` activates the frozen `asset_dir` and validates `manifest.json` plus every required file. Pending-edit responses and output-only assembly steps skip asset loading.
 - After `asset_dir` is active, the BabelDOC-derived asset loader reads local files and raises `AssetError` for missing or damaged assets.

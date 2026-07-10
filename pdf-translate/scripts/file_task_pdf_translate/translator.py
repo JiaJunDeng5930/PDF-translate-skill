@@ -91,6 +91,7 @@ class FileTaskTranslator(BaseTranslator):
 
     def _translation_task_from_items(self, items: list[dict]) -> dict:
         task_page = self._task_page_from_items(items)
+        active_page = self._active_page()
         context_page = task_page if isinstance(task_page, int) else None
         blocks = []
         for index, item in enumerate(items):
@@ -112,7 +113,7 @@ class FileTaskTranslator(BaseTranslator):
                 "hygiene_context": context,
                 "context_before": context_before,
             }
-            page = item.get("page")
+            page = active_page if active_page is not None else item.get("page")
             if isinstance(page, int):
                 block["page"] = page
             blocks.append(block)

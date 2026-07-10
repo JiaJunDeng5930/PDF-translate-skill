@@ -1,7 +1,3 @@
-# Local pdf-translate change on 2026-06-25: defer_pdf_output lets the
-# file-backed workflow collect accepted translation patches before final PDF
-# generation.
-
 import logging
 import shutil
 import tempfile
@@ -114,7 +110,6 @@ class TranslationConfig:
         skip_form_render: bool = False,
         skip_curve_render: bool = False,
         only_parse_generate_pdf: bool = False,
-        defer_pdf_output: bool = False,
         remove_non_formula_lines: bool = False,
         non_formula_line_iou_threshold: float = 0.9,
         figure_table_protection_threshold: float = 0.9,
@@ -215,7 +210,6 @@ class TranslationConfig:
         self.auto_enable_ocr_workaround = auto_enable_ocr_workaround
         self.skip_translation = skip_translation
         self.only_parse_generate_pdf = only_parse_generate_pdf
-        self.defer_pdf_output = defer_pdf_output
 
         if auto_enable_ocr_workaround:
             self.ocr_workaround = False

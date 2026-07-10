@@ -8,7 +8,7 @@
 # Modified on 2026-06-15 to carry text roles and geometry hygiene context
 # through file-backed translation batches.
 # Modified on 2026-06-25 to include 1-based source pages in file-backed
-# translation tasks for final replay.
+# translation tasks.
 
 import json
 import logging

@@ -163,14 +163,15 @@ pdf_translate.yaml
   -> advance.py
   -> validate local asset_dir
   -> freeze config into .pdf_translate/state.json
-  -> run internal PDF pipeline
+  -> isolate one selected source page
+  -> run the internal PDF pipeline for that page
   -> pause at term/translation task
   -> write current_translation.yaml
   -> validate accepted answer
   -> store answer patch by task hash
-  -> repeat until selected pages are complete
-  -> final replay into IL
-  -> generate translated PDF once
+  -> typeset and commit the translated page
+  -> repeat one bounded page step per advance
+  -> publish completed PDF variants
 ```
 
 ## Limitations
