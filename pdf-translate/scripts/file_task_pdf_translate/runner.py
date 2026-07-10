@@ -74,6 +74,10 @@ def advance(workspace: Path | None = None) -> dict:
         drift_error = _config_drift_error(state, workspace_config.snapshot)
         if drift_error:
             return _config_error_response(paths, drift_error, state)
+        if state.get("status") == "done":
+            state["advance_count"] = int(state.get("advance_count", 0)) + 1
+            write_json(paths.state, state)
+            return _done_response(paths, state, [])
         try:
             if _ensure_page_plan(paths, state):
                 write_json(paths.state, state)
@@ -114,7 +118,10 @@ def advance(workspace: Path | None = None) -> dict:
             return response
         try:
             output_pdfs, _output_pdf = _collect_output_pdfs(result, state["config"])
-            output_errors = _validate_output_pdfs(output_pdfs)
+            output_errors = _validate_output_pdfs(
+                output_pdfs,
+                state["config"]["output_mode"],
+            )
             if output_errors:
                 return _output_error_response(
                     paths,
@@ -1207,13 +1214,19 @@ def _collect_output_pdfs(result, config: dict) -> tuple[dict[str, str], str | No
     return output_pdfs, next(iter(output_pdfs.values()), None)
 
 
-def _validate_output_pdfs(output_pdfs: dict[str, str]) -> list[str]:
-    if not output_pdfs:
-        return ["output PDF was not generated"]
+def _validate_output_pdfs(
+    output_pdfs: dict[str, str],
+    output_mode: str,
+) -> list[str]:
+    required_labels = ("mono", "dual") if output_mode == "both" else (output_mode,)
+    errors = [
+        f"{label} output PDF was not generated"
+        for label in required_labels
+        if label not in output_pdfs
+    ]
 
     import pymupdf
 
-    errors: list[str] = []
     for label, path_text in output_pdfs.items():
         path = Path(path_text)
         if not path.exists():
