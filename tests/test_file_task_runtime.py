@@ -1316,6 +1316,41 @@ add_formula_placehold_hint: true
         )
         self.assertEqual(len(set(annotation_ids)), 2)
 
+    def test_cached_original_page_preserves_form_widgets(self) -> None:
+        import pymupdf
+
+        from file_task_pdf_translate.runner import _ensure_page_source
+        from file_task_pdf_translate.state import ensure_dirs
+        from file_task_pdf_translate.state import paths_for
+
+        source_path = self.tmp / "form-source.pdf"
+        source = pymupdf.open()
+        page = source.new_page(width=300, height=160)
+        widget = pymupdf.Widget()
+        widget.field_name = "reader-name"
+        widget.field_type = pymupdf.PDF_WIDGET_TYPE_TEXT
+        widget.rect = pymupdf.Rect(30, 80, 180, 105)
+        page.add_widget(widget)
+        source.save(source_path)
+        source.close()
+        paths = paths_for(self.tmp)
+        ensure_dirs(paths)
+
+        cached_path = _ensure_page_source(
+            paths,
+            {"config": {"input_pdf": str(source_path)}},
+            1,
+        )
+
+        cached = pymupdf.open(cached_path)
+        try:
+            field_names = [
+                item.field_name for item in (cached[0].widgets() or [])
+            ]
+        finally:
+            cached.close()
+        self.assertEqual(field_names, ["reader-name"])
+
     def test_original_dual_page_keeps_rotated_interactions_inside_page(self) -> None:
         import pymupdf
 
@@ -2356,6 +2391,47 @@ class EditableYamlWorkflowTests(unittest.TestCase):
 
         task = translator._translation_task_from_items([{"id": 0, "input": "els [5]"}])
 
+        self.assertIn("fast T2I models", task["blocks"][0]["context_before"])
+
+    def test_cross_page_task_keeps_context_before_its_first_page(self) -> None:
+        from file_task_pdf_translate.state import ensure_dirs
+        from file_task_pdf_translate.state import paths_for
+        from file_task_pdf_translate.translator import FileTaskTranslator
+
+        paths = paths_for(self.tmp)
+        ensure_dirs(paths)
+        source_pdf = self.tmp / "paper.pdf"
+        write_test_pdf(
+            source_pdf,
+            ["fast T2I models", "els [5] continue", "next paragraph"],
+        )
+        state = {
+            "config": {
+                "lang_in": "en",
+                "lang_out": "zh-CN",
+                "input_pdf": str(source_pdf),
+                "pages_per_advance": 2,
+            },
+            "page_plan": {
+                "target_page_ranges": [[2, 3]],
+                "target_count": 2,
+                "active_page": 2,
+                "completed_count": 0,
+                "rendered_count": 0,
+            },
+            "pending_task_hash": None,
+            "status": "running",
+        }
+        translator = FileTaskTranslator(paths, state)
+
+        task = translator._translation_task_from_items(
+            [
+                {"id": 0, "input": "els [5]", "page": 1},
+                {"id": 1, "input": "next paragraph", "page": 2},
+            ]
+        )
+
+        self.assertEqual(task["page"], [2, 3])
         self.assertIn("fast T2I models", task["blocks"][0]["context_before"])
 
     def test_translation_task_maps_batch_pages_to_original_page_numbers(self) -> None:

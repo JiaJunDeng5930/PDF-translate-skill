@@ -95,7 +95,7 @@ class FileTaskTranslator(BaseTranslator):
 
     def _translation_task_from_items(self, items: list[dict]) -> dict:
         task_page = self._task_page_from_items(items)
-        context_page = task_page if isinstance(task_page, int) else None
+        context_page = task_page[0] if isinstance(task_page, list) else task_page
         blocks = []
         for index, item in enumerate(items):
             original_source = item.get("input", "")

@@ -888,6 +888,7 @@ def _ensure_page_source(paths, state: dict, page_number: int) -> Path:
             to_page=page_index,
             links=True,
             annots=True,
+            widgets=True,
         )
         if source.metadata:
             page.set_metadata(source.metadata)
