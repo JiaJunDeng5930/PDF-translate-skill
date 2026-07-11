@@ -46,6 +46,10 @@ OUTPUT_INTERNAL_MARKER_RE = re.compile(
     r"</?b\d+>|\{\{(?:FORMULA|PROTECTED)_[0-9]+\}\}",
     re.IGNORECASE,
 )
+PDF_COORDINATE_NUMBER_RE = re.compile(
+    r"[-+]?(?:\d+\.\d*|\.\d+|\d+)(?:[eE][-+]?\d+)?"
+)
+PDF_REFERENCE_RE = re.compile(r"(\d+)\s+\d+\s+R")
 
 
 def advance(workspace: Path | None = None) -> dict:
@@ -347,37 +351,139 @@ def _append_pdf_page(assembled_path: Path, page_path: Path) -> None:
         page.close()
 
 
+def _shift_pdf_coordinate_array(array_text: str, x_offset: float) -> str:
+    coordinate_index = 0
+
+    def shift_coordinate(match: re.Match[str]) -> str:
+        nonlocal coordinate_index
+        value = float(match.group(0))
+        if coordinate_index % 2 == 0:
+            value += x_offset
+        coordinate_index += 1
+        return f"{value:.12g}"
+
+    return PDF_COORDINATE_NUMBER_RE.sub(shift_coordinate, array_text)
+
+
+def _duplicate_page_annotations(document, page, x_offset: float) -> None:
+    array_type, array_text = document.xref_get_key(page.xref, "Annots")
+    array_xref = None
+    if array_type == "xref":
+        array_xref = int(array_text.split()[0])
+        array_text = document.xref_object(array_xref)
+    elif array_type != "array":
+        return
+
+    source_xrefs = [
+        int(match.group(1)) for match in PDF_REFERENCE_RE.finditer(array_text)
+    ]
+    duplicate_xrefs: dict[int, int] = {}
+    for source_xref in source_xrefs:
+        _subtype_type, subtype = document.xref_get_key(source_xref, "Subtype")
+        # Widgets remain one logical AcroForm control on the retained source half.
+        if subtype == "/Widget":
+            continue
+        duplicate_xref = document.get_new_xref()
+        document.update_object(duplicate_xref, document.xref_object(source_xref))
+        duplicate_xrefs[source_xref] = duplicate_xref
+
+    coordinate_keys = (
+        "Rect",
+        "QuadPoints",
+        "L",
+        "Vertices",
+        "InkList",
+        "CL",
+        "Path",
+    )
+    relationship_keys = ("Popup", "Parent", "IRT")
+    for duplicate_xref in duplicate_xrefs.values():
+        document.xref_set_key(duplicate_xref, "P", f"{page.xref} 0 R")
+        document.xref_set_key(duplicate_xref, "NM", f"(dual-{duplicate_xref})")
+        for key in coordinate_keys:
+            value_type, value = document.xref_get_key(duplicate_xref, key)
+            if value_type == "array":
+                document.xref_set_key(
+                    duplicate_xref,
+                    key,
+                    _shift_pdf_coordinate_array(value, x_offset),
+                )
+        for key in relationship_keys:
+            value_type, value = document.xref_get_key(duplicate_xref, key)
+            if value_type != "xref":
+                continue
+            target_xref = int(value.split()[0])
+            duplicate_target = duplicate_xrefs.get(target_xref)
+            if duplicate_target is not None:
+                document.xref_set_key(
+                    duplicate_xref,
+                    key,
+                    f"{duplicate_target} 0 R",
+                )
+
+    if not duplicate_xrefs:
+        return
+    combined_array = "[ " + " ".join(
+        f"{xref} 0 R" for xref in (*source_xrefs, *duplicate_xrefs.values())
+    ) + " ]"
+    if array_xref is None:
+        document.xref_set_key(page.xref, "Annots", combined_array)
+    else:
+        document.update_object(array_xref, combined_array)
+
+
 def _append_original_dual_page(assembled_path: Path, page_path: Path) -> None:
     import pymupdf
 
     source = pymupdf.open(page_path)
     dual_page = pymupdf.open()
+    render_source = pymupdf.open()
     try:
-        page = source[0]
-        rotation = page.rotation
-        width = page.rect.width
-        height = page.rect.height
-        page.set_rotation(0)
-        output_page = dual_page.new_page(width=width * 2, height=height)
-        output_page.show_pdf_page(
-            pymupdf.Rect(0, 0, width, height),
+        source_links = source[0].get_links()
+        dual_page.insert_pdf(
             source,
-            0,
-            keep_proportion=True,
-            rotate=-rotation,
+            from_page=0,
+            to_page=0,
+            links=False,
+            annots=True,
+            widgets=True,
         )
+        output_page = dual_page[0]
+        output_page.remove_rotation()
+        output_page = dual_page.reload_page(output_page)
+        for source_link in source_links:
+            link = {
+                key: value
+                for key, value in source_link.items()
+                if key not in {"xref", "id"}
+            }
+            output_page.insert_link(link)
+        output_page = dual_page.reload_page(output_page)
+        width = output_page.rect.width
+        height = output_page.rect.height
+        render_source.insert_pdf(
+            dual_page,
+            from_page=0,
+            to_page=0,
+            links=False,
+            annots=False,
+            widgets=False,
+        )
+        output_page.set_mediabox(pymupdf.Rect(0, 0, width * 2, height))
+        output_page = dual_page.reload_page(output_page)
         output_page.show_pdf_page(
             pymupdf.Rect(width, 0, width * 2, height),
-            source,
+            render_source,
             0,
             keep_proportion=True,
-            rotate=-rotation,
         )
+        _duplicate_page_annotations(dual_page, output_page, width)
 
         temp_path = page_path.with_suffix(".dual-original.pdf")
         temp_path.unlink(missing_ok=True)
         dual_page.save(temp_path, garbage=1, deflate=True)
     finally:
+        render_source.close()
         dual_page.close()
         source.close()
     try:

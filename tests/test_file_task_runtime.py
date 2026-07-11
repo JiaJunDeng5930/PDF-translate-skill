@@ -1053,6 +1053,103 @@ add_formula_placehold_hint: true
         self.assertEqual(links[0]["page"], 1)
         self.assertEqual(annotations, ["keep annotation"])
 
+    def test_original_dual_page_preserves_interactive_objects_on_both_halves(
+        self,
+    ) -> None:
+        import pymupdf
+
+        from file_task_pdf_translate.runner import _append_original_dual_page
+
+        source_path = self.tmp / "source-page.pdf"
+        source = pymupdf.open()
+        page = source.new_page(width=300, height=160)
+        page.insert_text((30, 60), "source page")
+        page.insert_link(
+            {
+                "kind": pymupdf.LINK_URI,
+                "from": pymupdf.Rect(30, 80, 130, 100),
+                "uri": "https://example.com/source",
+            }
+        )
+        page.add_text_annot((160, 80), "keep dual annotation")
+        source.save(source_path)
+        source.close()
+
+        assembled_path = self.tmp / "dual.pdf"
+        _append_original_dual_page(assembled_path, source_path)
+
+        output = pymupdf.open(assembled_path)
+        try:
+            output_page = output[0]
+            links = output_page.get_links()
+            annotations = list(output_page.annots() or [])
+            link_x = sorted(round(link["from"].x0) for link in links)
+            annotation_x = sorted(round(annotation.rect.x0) for annotation in annotations)
+            annotation_contents = [
+                annotation.info.get("content") for annotation in annotations
+            ]
+            annotation_ids = [annotation.info.get("id") for annotation in annotations]
+        finally:
+            output.close()
+
+        self.assertEqual(link_x, [30, 330])
+        self.assertEqual(len(annotation_x), 2)
+        self.assertEqual(annotation_x[1] - annotation_x[0], 300)
+        self.assertEqual(
+            annotation_contents,
+            ["keep dual annotation", "keep dual annotation"],
+        )
+        self.assertEqual(len(set(annotation_ids)), 2)
+
+    def test_original_dual_page_keeps_rotated_interactions_inside_page(self) -> None:
+        import pymupdf
+
+        from file_task_pdf_translate.runner import _append_original_dual_page
+
+        source_path = self.tmp / "rotated-source-page.pdf"
+        source = pymupdf.open()
+        page = source.new_page(width=300, height=160)
+        page.insert_text((30, 60), "rotated source")
+        page.insert_link(
+            {
+                "kind": pymupdf.LINK_URI,
+                "from": pymupdf.Rect(30, 80, 130, 100),
+                "uri": "https://example.com/rotated",
+            }
+        )
+        page.add_text_annot((160, 80), "rotated annotation")
+        page.set_rotation(90)
+        source.save(source_path)
+        source.close()
+
+        assembled_path = self.tmp / "rotated-dual.pdf"
+        _append_original_dual_page(assembled_path, source_path)
+
+        output = pymupdf.open(assembled_path)
+        try:
+            output_page = output[0]
+            output_rect = output_page.rect
+            links = output_page.get_links()
+            annotations = list(output_page.annots() or [])
+            link_x = sorted(round(link["from"].x0) for link in links)
+            annotation_x = sorted(round(annotation.rect.x0) for annotation in annotations)
+            interactions_fit = all(
+                output_rect.contains(interaction_rect)
+                for interaction_rect in (
+                    *(link["from"] for link in links),
+                    *(annotation.rect for annotation in annotations),
+                )
+            )
+        finally:
+            output.close()
+
+        self.assertEqual(output_rect, pymupdf.Rect(0, 0, 320, 300))
+        self.assertEqual(len(link_x), 2)
+        self.assertEqual(link_x[1] - link_x[0], 160)
+        self.assertEqual(len(annotation_x), 2)
+        self.assertEqual(annotation_x[1] - annotation_x[0], 160)
+        self.assertTrue(interactions_fit)
+
     def test_last_mono_page_publishes_without_full_document_replay(self) -> None:
         import pymupdf
 
