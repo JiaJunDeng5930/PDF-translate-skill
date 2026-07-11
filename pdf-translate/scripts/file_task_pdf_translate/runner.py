@@ -764,10 +764,26 @@ def _publish_outputs(paths, state: dict, warnings: list[str]) -> dict:
     if missing:
         return _output_error_response(paths, state, output_pdfs, missing, warnings)
 
-    for mode, (assembled_path, output_path) in publish_paths.items():
-        if assembled_path.exists():
-            assembled_path.replace(output_path)
-        output_pdfs[mode] = str(output_path)
+    moved_outputs = []
+    try:
+        for mode, (assembled_path, output_path) in publish_paths.items():
+            if assembled_path.exists():
+                assembled_path.replace(output_path)
+                moved_outputs.append((output_path, assembled_path))
+            output_pdfs[mode] = str(output_path)
+    except Exception as publish_error:
+        rollback_errors = []
+        for output_path, assembled_path in reversed(moved_outputs):
+            try:
+                output_path.replace(assembled_path)
+            except Exception as rollback_error:
+                rollback_errors.append(str(rollback_error))
+        if rollback_errors:
+            raise RuntimeError(
+                f"output publication failed: {publish_error}; rollback failed: "
+                + "; ".join(rollback_errors)
+            ) from publish_error
+        raise
 
     state["status"] = "done"
     state["pending_task_hash"] = None
@@ -903,12 +919,22 @@ def _ensure_page_source(paths, state: dict, page_number: int) -> Path:
 def _ensure_page_plan(paths, state: dict) -> bool:
     input_path = Path(state["config"]["input_pdf"])
     stat = input_path.stat()
-    # ponytail: stat identity keeps resumes O(1); add content hashing when
-    # workspaces become an untrusted mutation boundary.
-    source_identity = {"size": stat.st_size, "mtime_ns": stat.st_mtime_ns}
+    source_identity = {
+        "size": stat.st_size,
+        "mtime_ns": stat.st_mtime_ns,
+        "ctime_ns": stat.st_ctime_ns,
+        "file_id": stat.st_ino,
+    }
     existing_plan = state.get("page_plan") or {}
     existing_identity = existing_plan.get("source_identity")
-    if existing_identity is not None and existing_identity != source_identity:
+    identity_changed = existing_identity is not None and (
+        not isinstance(existing_identity, dict)
+        or any(
+            source_identity.get(key) != value
+            for key, value in existing_identity.items()
+        )
+    )
+    if identity_changed:
         raise RuntimeError(
             "input PDF changed after initialization; restore the original PDF or "
             "remove .pdf_translate to start a new translation"

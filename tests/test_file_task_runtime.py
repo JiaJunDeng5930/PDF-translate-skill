@@ -989,6 +989,34 @@ add_formula_placehold_hint: true
         self.assertEqual(second["status"], "config_error")
         self.assertIn("input PDF changed", second["validation_errors"][0])
 
+    def test_page_plan_rejects_replaced_pdf_with_same_size_and_mtime(self) -> None:
+        from file_task_pdf_translate.runner import _ensure_page_plan
+        from file_task_pdf_translate.state import ensure_dirs
+        from file_task_pdf_translate.state import paths_for
+
+        source_pdf = self.tmp / "paper.pdf"
+        replacement_pdf = self.tmp / "replacement.pdf"
+        write_test_pdf(source_pdf, ["original one", "original two"])
+        paths = paths_for(self.tmp)
+        ensure_dirs(paths)
+        state = {"config": {"input_pdf": str(source_pdf), "pages": None}}
+        _ensure_page_plan(paths, state)
+        original_stat = source_pdf.stat()
+
+        write_test_pdf(replacement_pdf, ["replaced one", "replaced two"])
+        self.assertEqual(replacement_pdf.stat().st_size, original_stat.st_size)
+        os.utime(
+            replacement_pdf,
+            ns=(replacement_pdf.stat().st_atime_ns, original_stat.st_mtime_ns),
+        )
+        replacement_pdf.replace(source_pdf)
+        replaced_stat = source_pdf.stat()
+        self.assertEqual(replaced_stat.st_size, original_stat.st_size)
+        self.assertEqual(replaced_stat.st_mtime_ns, original_stat.st_mtime_ns)
+
+        with self.assertRaisesRegex(RuntimeError, "input PDF changed"):
+            _ensure_page_plan(paths, state)
+
     def test_done_workspace_returns_done_after_input_pdf_changes(self) -> None:
         from file_task_pdf_translate.config import load_workspace_config
         from file_task_pdf_translate.runner import advance
@@ -1051,6 +1079,7 @@ add_formula_placehold_hint: true
 
     def test_unchanged_input_reuses_frozen_page_count(self) -> None:
         from file_task_pdf_translate.runner import _ensure_page_plan
+        from file_task_pdf_translate.state import ensure_dirs
         from file_task_pdf_translate.state import paths_for
 
         source_pdf = self.tmp / "paper.pdf"
@@ -1071,14 +1100,18 @@ add_formula_placehold_hint: true
                 "rendered_count": 0,
             },
         }
+        paths = paths_for(self.tmp)
+        ensure_dirs(paths)
 
         with patch(
             "file_task_pdf_translate.runner._source_page_count",
             side_effect=AssertionError("unchanged PDF was reopened"),
         ):
-            changed = _ensure_page_plan(paths_for(self.tmp), state)
+            changed = _ensure_page_plan(paths, state)
 
-        self.assertFalse(changed)
+        self.assertTrue(changed)
+        self.assertIn("ctime_ns", state["page_plan"]["source_identity"])
+        self.assertIn("file_id", state["page_plan"]["source_identity"])
 
     def test_advance_reports_invalid_page_shard_as_runtime_error(self) -> None:
         from file_task_pdf_translate.runner import advance
@@ -1657,6 +1690,51 @@ add_formula_placehold_hint: true
         self.assertEqual(result["status"], "error")
         self.assertTrue((paths.assembled / "mono.pdf").exists())
         self.assertFalse((paths.output / "paper.zh-CN.mono.pdf").exists())
+
+    def test_both_publish_rolls_back_when_second_move_fails(self) -> None:
+        from file_task_pdf_translate.runner import _publish_outputs
+        from file_task_pdf_translate.state import ensure_dirs
+        from file_task_pdf_translate.state import paths_for
+
+        workspace = self.tmp
+        source_pdf = workspace / "paper.pdf"
+        write_test_pdf(source_pdf, ["source"])
+        paths = paths_for(workspace)
+        ensure_dirs(paths)
+        mono_assembled = paths.assembled / "mono.pdf"
+        dual_assembled = paths.assembled / "dual.pdf"
+        write_test_pdf(mono_assembled, ["translated mono"])
+        write_test_pdf(dual_assembled, ["translated dual"])
+        state = {
+            "status": "page_completed",
+            "config": {
+                "input_pdf": str(source_pdf),
+                "lang_out": "zh-CN",
+                "output_mode": "both",
+            },
+            "page_plan": {
+                "source_page_count": 1,
+                "target_page_ranges": [[1, 1]],
+                "target_count": 1,
+                "active_page": None,
+                "completed_count": 1,
+            },
+        }
+        real_replace = Path.replace
+
+        def fail_dual_move(path: Path, target: Path) -> Path:
+            if path == dual_assembled:
+                raise OSError("simulated dual publication failure")
+            return real_replace(path, target)
+
+        with patch.object(Path, "replace", autospec=True, side_effect=fail_dual_move):
+            with self.assertRaisesRegex(OSError, "dual publication failure"):
+                _publish_outputs(paths, state, [])
+
+        self.assertTrue(mono_assembled.exists())
+        self.assertTrue(dual_assembled.exists())
+        self.assertFalse((paths.output / "paper.zh-CN.mono.pdf").exists())
+        self.assertFalse((paths.output / "paper.zh-CN.dual.pdf").exists())
 
     def test_progress_snapshot_reports_business_page_cursor(self) -> None:
         from file_task_pdf_translate.runner import _record_pipeline_progress
