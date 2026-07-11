@@ -1,4 +1,4 @@
 interface:
   display_name: "PDF Translate"
   short_description: "File-backed PDF translation"
-  default_prompt: "Use $pdf-translate to prepare runtime assets, write pdf_translate.yaml, translate a local PDF by calling advance, edit the returned clean translation file, and repeat until the translated PDF is complete."
+  default_prompt: "Use $pdf-translate to translate a local PDF while preserving its layout and structure."
