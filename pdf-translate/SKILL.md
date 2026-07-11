@@ -40,6 +40,7 @@ input_pdf: "paper.pdf"
 lang_in: "en"
 lang_out: "zh-CN"
 asset_dir: "pdf-translate-assets"
+pages_per_advance: 1
 output_mode: "mono"
 primary_font_family: null
 add_formula_placehold_hint: true
@@ -63,7 +64,7 @@ Follow the returned `status`:
 - `asset_error`: prepare the configured `asset_dir` with `scripts/download_assets.py`, then run advance again.
 - `needs_ai_edit`: open `editable_file`, edit the YAML fields, save, then run advance again.
 - `needs_ai_fix`: correct the same file according to `validation_errors`, save, then run advance again.
-- `page_completed`: one bounded page step is complete. Run advance again for `next_page`; during output assembly, follow `next_finalization_page`.
+- `page_completed`: one configured page batch is complete. Read `completed_pages`, run advance again for `next_page`, and follow `finalized_pages` plus `next_finalization_page` during output assembly.
 - `done`: deliver `output_pdf` and use `output_pdfs` when multiple variants were generated.
 - `error`: inspect `validation_errors` and the trace tail.
 

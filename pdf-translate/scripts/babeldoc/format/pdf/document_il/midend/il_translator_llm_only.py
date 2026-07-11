@@ -9,6 +9,8 @@
 # through file-backed translation batches.
 # Modified on 2026-06-25 to include 1-based source pages in file-backed
 # translation tasks.
+# Modified on 2026-07-11 to preserve cross-page paragraph processing in
+# multi-page file-backed translation batches.
 
 import json
 import logging
@@ -225,6 +227,14 @@ class ILTranslatorLLMOnly:
             if is_file_task_workflow(self.translation_config):
                 executor = ImmediateExecutor()
                 executor2 = ImmediateExecutor()
+                self.process_cross_page_paragraph(
+                    docs,
+                    executor,
+                    pbar,
+                    tracker,
+                    executor2,
+                    translated_ids,
+                )
                 for page in docs.page:
                     self.process_page(
                         page,

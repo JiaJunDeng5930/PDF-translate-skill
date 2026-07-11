@@ -65,6 +65,7 @@ output_mode: booklet
 watermark_output_mode: clean
 primary_font_family: display
 table_model: unsupported
+pages_per_advance: 0
 """.strip()
             + "\n",
         )
@@ -82,6 +83,7 @@ table_model: unsupported
         self.assertIn("remove watermark_output_mode", message)
         self.assertIn("primary_font_family must be", message)
         self.assertIn("table_model is not a translation setting", message)
+        self.assertIn("pages_per_advance must be a positive integer", message)
 
     def test_config_maps_language_output_to_babeldoc_params(self) -> None:
         from file_task_pdf_translate.config import load_workspace_config
@@ -127,6 +129,41 @@ add_formula_placehold_hint: false
         self.assertFalse(hasattr(config, "watermark_output_mode"))
         self.assertEqual(config.primary_font_family, "serif")
         self.assertFalse(config.add_formula_placehold_hint)
+
+    def test_config_accepts_pages_per_advance(self) -> None:
+        from file_task_pdf_translate.config import load_workspace_config
+
+        self.write_config(
+            """
+input_pdf: paper.pdf
+lang_in: en
+lang_out: zh-CN
+asset_dir: assets
+pages_per_advance: 3
+output_mode: mono
+""".lstrip()
+        )
+
+        snapshot = load_workspace_config(self.tmp).snapshot
+
+        self.assertEqual(snapshot["pages_per_advance"], 3)
+
+    def test_config_default_batch_preserves_legacy_snapshot(self) -> None:
+        from file_task_pdf_translate.config import load_workspace_config
+
+        self.write_config(
+            """
+input_pdf: paper.pdf
+lang_in: en
+lang_out: zh-CN
+asset_dir: assets
+output_mode: mono
+""".lstrip()
+        )
+
+        snapshot = load_workspace_config(self.tmp).snapshot
+
+        self.assertNotIn("pages_per_advance", snapshot)
 
     def test_initialized_state_keeps_runtime_sources_single_owned(self) -> None:
         from file_task_pdf_translate.config import load_workspace_config
@@ -500,7 +537,7 @@ class PagePlanRegressionTests(unittest.TestCase):
 
     def test_page_plan_tracks_target_active_and_completed_pages(self) -> None:
         from file_task_pdf_translate.state import ensure_page_plan
-        from file_task_pdf_translate.state import mark_active_page_completed
+        from file_task_pdf_translate.state import mark_active_batch_completed
 
         state = {"config": {"pages": None}}
 
@@ -513,13 +550,36 @@ class PagePlanRegressionTests(unittest.TestCase):
         self.assertEqual(state["page_plan"]["completed_count"], 0)
         self.assertEqual(state["page_plan"]["rendered_count"], 0)
 
-        completed, next_page = mark_active_page_completed(state)
+        completed, next_page = mark_active_batch_completed(state)
 
-        self.assertEqual(completed, 1)
+        self.assertEqual(completed, [1])
         self.assertEqual(next_page, 2)
         self.assertEqual(state["page_plan"]["active_page"], 2)
         self.assertEqual(state["page_plan"]["completed_count"], 1)
         self.assertEqual(state["page_plan"]["rendered_count"], 1)
+
+    def test_page_plan_batches_contiguous_targets_by_configured_size(self) -> None:
+        from file_task_pdf_translate.state import active_batch_pages
+        from file_task_pdf_translate.state import ensure_page_plan
+        from file_task_pdf_translate.state import mark_active_batch_completed
+
+        state = {
+            "config": {
+                "pages": "3-5,1-4,7",
+                "pages_per_advance": 3,
+            }
+        }
+        ensure_page_plan(state, 7)
+
+        self.assertEqual(active_batch_pages(state), [3, 4, 5])
+
+        completed, next_page = mark_active_batch_completed(state)
+
+        self.assertEqual(completed, [3, 4, 5])
+        self.assertEqual(next_page, 1)
+        self.assertEqual(active_batch_pages(state), [1, 2])
+        self.assertEqual(state["page_plan"]["completed_count"], 3)
+        self.assertEqual(state["page_plan"]["rendered_count"], 3)
 
     def test_legacy_page_plan_preserves_accepted_cursor_for_materialization(self) -> None:
         from file_task_pdf_translate.state import ensure_page_plan
@@ -615,6 +675,67 @@ class PagePlanRegressionTests(unittest.TestCase):
         finally:
             page_source.close()
 
+    def test_multi_page_batch_config_uses_contiguous_private_source(self) -> None:
+        from file_task_pdf_translate.runner import _build_translation_config
+        from file_task_pdf_translate.state import paths_for
+        from file_task_pdf_translate.translator import FileTaskTranslator
+
+        source_pdf = self.tmp / "paper.pdf"
+        write_test_pdf(source_pdf, ["page 1", "page 2", "page 3"])
+        paths = paths_for(self.tmp)
+        state = {
+            "config": {
+                "input_pdf": str(source_pdf),
+                "lang_in": "en",
+                "lang_out": "zh-CN",
+                "pages": None,
+                "pages_per_advance": 2,
+                "output_mode": "mono",
+                "primary_font_family": None,
+                "add_formula_placehold_hint": True,
+            },
+            "page_plan": {
+                "source_page_count": 3,
+                "target_page_ranges": [[1, 3]],
+                "target_count": 3,
+                "active_page": 1,
+                "completed_count": 0,
+                "rendered_count": 0,
+            },
+        }
+        translator = FileTaskTranslator(paths, state)
+
+        with patch(
+            "babeldoc.docvision.doclayout.OnnxModel.load_available",
+            return_value=object(),
+        ):
+            config = _build_translation_config(paths, state, translator)
+
+        self.assertEqual(config.pages, "1-2")
+        self.assertEqual(config.page_ranges, [(1, 2)])
+        self.assertEqual(
+            Path(config.input_file),
+            paths.page_sources / "batch_0001_0002.pdf",
+        )
+        self.assertEqual(
+            Path(config.output_dir),
+            paths.page_outputs / "batch_0001_0002",
+        )
+        self.assertEqual(
+            Path(config.working_dir),
+            paths.working / "batch_0001_0002",
+        )
+
+        import pymupdf
+
+        batch_source = pymupdf.open(config.input_file)
+        try:
+            self.assertEqual(batch_source.page_count, 2)
+            self.assertIn("page 1", batch_source[0].get_text("text"))
+            self.assertIn("page 2", batch_source[1].get_text("text"))
+        finally:
+            batch_source.close()
+
     def test_advance_returns_page_completed_before_next_page(self) -> None:
         from file_task_pdf_translate.runner import advance
         from file_task_pdf_translate.state import paths_for
@@ -676,6 +797,83 @@ add_formula_placehold_hint: true
         self.assertIn("translated page one", assembled_text[0])
         self.assertIn("source page two", assembled_text[1])
         self.assertEqual(translate_call.call_args.args[0].pages, "1")
+
+    def test_advance_commits_configured_multi_page_batch(self) -> None:
+        import pymupdf
+
+        from file_task_pdf_translate.runner import advance
+        from file_task_pdf_translate.state import paths_for
+        from file_task_pdf_translate.state import read_json
+
+        workspace = self.tmp
+        write_test_pdf(
+            workspace / "paper.pdf",
+            ["source page one", "source page two", "source page three"],
+        )
+        (workspace / "assets").mkdir()
+        (workspace / "pdf_translate.yaml").write_text(
+            """
+input_pdf: paper.pdf
+lang_in: en
+lang_out: zh-CN
+asset_dir: assets
+pages: "1-3"
+pages_per_advance: 2
+output_mode: mono
+primary_font_family: null
+add_formula_placehold_hint: true
+""".lstrip(),
+            encoding="utf-8",
+        )
+        batch_output = workspace / "translated-batch.pdf"
+        write_test_pdf(batch_output, ["translated page one", "translated page two"])
+        translate_result = SimpleNamespace(
+            mono_pdf_path=batch_output,
+            dual_pdf_path=None,
+        )
+
+        with patch(
+            "file_task_pdf_translate.runner.set_runtime_asset_dir",
+            return_value=workspace / "assets",
+        ), patch(
+            "file_task_pdf_translate.runner.translate",
+            return_value=translate_result,
+        ) as translate_call, patch(
+            "file_task_pdf_translate.runner.shutdown_file_task_runtime",
+        ):
+            result = advance(workspace)
+
+        paths = paths_for(workspace)
+        state = read_json(paths.state, {})
+        assembled = pymupdf.open(paths.assembled / "mono.pdf")
+        try:
+            assembled_text = [page.get_text("text") for page in assembled]
+        finally:
+            assembled.close()
+
+        self.assertEqual(result["status"], "page_completed")
+        self.assertEqual(result["completed_pages"], [1, 2])
+        self.assertEqual(result["completed_page"], 2)
+        self.assertEqual(result["next_page"], 3)
+        self.assertEqual(state["page_plan"]["completed_count"], 2)
+        self.assertEqual(state["page_plan"]["rendered_count"], 2)
+        self.assertEqual(state["page_plan"]["active_page"], 3)
+        self.assertEqual(result["progress"]["page_plan"]["active_pages"], [3])
+        self.assertEqual(result["progress"]["page_plan"]["pages_per_advance"], 2)
+        self.assertIn("translated page one", assembled_text[0])
+        self.assertIn("translated page two", assembled_text[1])
+        self.assertIn("source page three", assembled_text[2])
+        self.assertEqual(translate_call.call_args.args[0].pages, "1-2")
+        for page_number in (1, 2):
+            shard = pymupdf.open(
+                paths.page_outputs
+                / f"page_{page_number:04d}"
+                / f"page_{page_number:04d}.zh-CN.mono.pdf"
+            )
+            try:
+                self.assertEqual(shard.page_count, 1)
+            finally:
+                shard.close()
 
     def test_both_page_requires_mono_and_dual_outputs_before_advancing(self) -> None:
         from file_task_pdf_translate.runner import advance
@@ -1226,7 +1424,9 @@ add_formula_placehold_hint: true
         self.assertIn("translated page one", page_texts[0])
         self.assertIn("translated page two", page_texts[1])
 
-    def test_dual_output_assembly_commits_one_source_page_per_advance(self) -> None:
+    def test_dual_output_assembly_commits_configured_page_batch_per_advance(
+        self,
+    ) -> None:
         import pymupdf
 
         from file_task_pdf_translate.config import load_workspace_config
@@ -1250,6 +1450,7 @@ lang_in: en
 lang_out: zh-CN
 asset_dir: assets
 pages: "2"
+pages_per_advance: 2
 output_mode: both
 primary_font_family: null
 add_formula_placehold_hint: true
@@ -1280,7 +1481,6 @@ add_formula_placehold_hint: true
         dual_shard.parent.mkdir(parents=True)
         write_test_pdf(dual_shard, ["source page two translated page two"])
 
-        results = []
         with patch(
             "file_task_pdf_translate.runner.set_runtime_asset_dir",
             return_value=workspace / "assets",
@@ -1288,30 +1488,21 @@ add_formula_placehold_hint: true
             "file_task_pdf_translate.runner.translate",
             side_effect=AssertionError("translation replayed during output assembly"),
         ):
-            for expected_page in (1, 2, 3):
-                result = advance(workspace)
-                results.append(result)
-                if expected_page < 3:
-                    self.assertEqual(result["status"], "page_completed")
-                    self.assertEqual(result["finalized_page"], expected_page)
-                    self.assertEqual(result["next_finalization_page"], expected_page + 1)
-                    self.assertEqual(
-                        result["progress"]["pipeline_progress"]["stage"],
-                        "Output Assembly",
-                    )
-                    self.assertEqual(
-                        result["progress"]["page_progress"][
-                            "output_completed_count"
-                        ],
-                        expected_page,
-                    )
-                    assembled = pymupdf.open(paths.assembled / "dual.pdf")
-                    try:
-                        self.assertEqual(assembled.page_count, expected_page)
-                    finally:
-                        assembled.close()
+            first = advance(workspace)
+            result = advance(workspace)
 
-        result = results[-1]
+        self.assertEqual(first["status"], "page_completed")
+        self.assertEqual(first["finalized_pages"], [1, 2])
+        self.assertEqual(first["finalized_page"], 2)
+        self.assertEqual(first["next_finalization_page"], 3)
+        self.assertEqual(
+            first["progress"]["pipeline_progress"]["stage"],
+            "Output Assembly",
+        )
+        self.assertEqual(
+            first["progress"]["page_progress"]["output_completed_count"],
+            2,
+        )
         state = read_json(paths.state, {})
         self.assertEqual(result["status"], "done")
         self.assertEqual(state["output_plan"]["completed_count"], 3)
@@ -2149,6 +2340,41 @@ class EditableYamlWorkflowTests(unittest.TestCase):
 
         self.assertIn("fast T2I models", task["blocks"][0]["context_before"])
 
+    def test_translation_task_maps_batch_pages_to_original_page_numbers(self) -> None:
+        from file_task_pdf_translate.state import ensure_dirs
+        from file_task_pdf_translate.state import paths_for
+        from file_task_pdf_translate.translator import FileTaskTranslator
+
+        paths = paths_for(self.tmp)
+        ensure_dirs(paths)
+        state = {
+            "config": {
+                "lang_in": "en",
+                "lang_out": "zh-CN",
+                "pages_per_advance": 2,
+            },
+            "page_plan": {
+                "target_page_ranges": [[5, 7]],
+                "target_count": 3,
+                "active_page": 5,
+                "completed_count": 0,
+                "rendered_count": 0,
+            },
+            "pending_task_hash": None,
+            "status": "running",
+        }
+        translator = FileTaskTranslator(paths, state)
+
+        task = translator._translation_task_from_items(
+            [
+                {"id": 0, "input": "Page five", "page": 1},
+                {"id": 1, "input": "Page six", "page": 2},
+            ]
+        )
+
+        self.assertEqual(task["page"], [5, 6])
+        self.assertEqual([block["page"] for block in task["blocks"]], [5, 6])
+
     def test_translation_task_repairs_hyphenated_item_boundary(self) -> None:
         from file_task_pdf_translate.state import ensure_dirs
         from file_task_pdf_translate.state import paths_for
@@ -2455,6 +2681,58 @@ class TranslationSelectionRegressionTests(unittest.TestCase):
         batch = executor.submit.call_args.args[1]
         self.assertEqual(batch.paragraphs, paragraphs)
         self.assertEqual(batch.pages, [page] * len(paragraphs))
+
+    def test_file_task_translation_processes_cross_page_paragraphs(self) -> None:
+        from contextlib import nullcontext
+
+        from babeldoc.format.pdf.document_il.midend import il_translator_llm_only
+
+        translator = object.__new__(il_translator_llm_only.ILTranslatorLLMOnly)
+        translator.il_translator = SimpleNamespace(docs=None)
+        translator.translation_config = SimpleNamespace(
+            file_task_workflow=True,
+            shared_context_cross_split_part=SimpleNamespace(
+                first_paragraph=object(),
+                recent_title_paragraph=None,
+            ),
+            progress_monitor=SimpleNamespace(
+                stage_start=lambda _name, _total: nullcontext(
+                    SimpleNamespace(advance=Mock())
+                )
+            ),
+            get_working_file_path=lambda _name: Path("translate_tracking.json"),
+            debug=False,
+            working_dir=None,
+        )
+        translator.total_count = 0
+        translator.ok_count = 0
+        translator.fallback_count = 0
+        call_order = []
+        translator.process_cross_page_paragraph = Mock(
+            side_effect=lambda *_args: call_order.append("cross-page")
+        )
+        translator.process_page = Mock(
+            side_effect=lambda *_args: call_order.append("page")
+        )
+        docs = SimpleNamespace(
+            page=[
+                SimpleNamespace(pdf_paragraph=[]),
+                SimpleNamespace(pdf_paragraph=[]),
+            ]
+        )
+
+        translator.translate(docs)
+
+        translator.process_cross_page_paragraph.assert_called_once()
+        self.assertEqual(translator.process_page.call_count, 2)
+        self.assertEqual(call_order, ["cross-page", "page", "page"])
+        translated_ids = (
+            translator.process_cross_page_paragraph.call_args.args[5]
+        )
+        self.assertIs(
+            translated_ids,
+            translator.process_page.call_args_list[0].args[5],
+        )
 
     def test_translation_stage_list_has_no_term_extraction(self) -> None:
         from babeldoc.format.pdf.high_level import get_translation_stage

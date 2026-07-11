@@ -105,6 +105,14 @@ def _normalize_config(root: Path, data: dict) -> dict:
     if pages is not None and not isinstance(pages, str):
         errors.append("pages must be null or a string")
 
+    pages_per_advance = data.get("pages_per_advance", 1)
+    if (
+        isinstance(pages_per_advance, bool)
+        or not isinstance(pages_per_advance, int)
+        or pages_per_advance < 1
+    ):
+        errors.append("pages_per_advance must be a positive integer")
+
     output_mode = data.get("output_mode", "mono")
     if output_mode not in OUTPUT_MODES:
         errors.append("output_mode must be one of: mono, dual, both")
@@ -130,6 +138,8 @@ def _normalize_config(root: Path, data: dict) -> dict:
         "primary_font_family": primary_font_family,
         "add_formula_placehold_hint": add_formula_placehold_hint,
     }
+    if "pages_per_advance" in data:
+        snapshot["pages_per_advance"] = pages_per_advance
     snapshot["config_hash"] = _stable_hash(snapshot)
     return snapshot
 

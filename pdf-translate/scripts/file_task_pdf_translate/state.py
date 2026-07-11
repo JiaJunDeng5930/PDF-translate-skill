@@ -235,6 +235,48 @@ def page_is_target(page_ranges: list[list[int]], page: int) -> bool:
     return any(start <= page <= end for start, end in page_ranges)
 
 
+def active_batch_pages(state: dict) -> list[int]:
+    plan = state.get("page_plan") or {}
+    ranges = plan.get("target_page_ranges") or []
+    if not ranges:
+        active_page = plan.get("active_page")
+        return [active_page] if isinstance(active_page, int) else []
+    start_index = int(plan.get("rendered_count", plan.get("completed_count", 0)))
+    target_count = int(plan.get("target_count", 0))
+    batch_size = int((state.get("config") or {}).get("pages_per_advance", 1))
+    pages = []
+    for index in range(start_index, min(start_index + batch_size, target_count)):
+        page = page_at_target_index(ranges, index)
+        if page is None or (pages and page != pages[-1] + 1):
+            break
+        pages.append(page)
+    return pages
+
+
+def mark_active_batch_completed(state: dict) -> tuple[list[int], int | None]:
+    pages = active_batch_pages(state)
+    if not pages:
+        return [], None
+
+    plan = state["page_plan"]
+    target_count = int(plan.get("target_count", 0))
+    rendered_count = min(
+        int(plan.get("rendered_count", plan.get("completed_count", 0))) + len(pages),
+        target_count,
+    )
+    plan["rendered_count"] = rendered_count
+    plan["completed_count"] = max(
+        int(plan.get("completed_count", 0)),
+        rendered_count,
+    )
+    next_page = page_at_target_index(
+        plan.get("target_page_ranges") or [],
+        rendered_count,
+    )
+    plan["active_page"] = next_page
+    return pages, next_page
+
+
 def ensure_page_plan(
     state: dict,
     source_page_count: int,
@@ -296,28 +338,6 @@ def ensure_page_plan(
         return False
     state["page_plan"] = compact_plan
     return True
-
-
-def mark_active_page_completed(state: dict) -> tuple[int | None, int | None]:
-    plan = state.get("page_plan") or {}
-    active_page = plan.get("active_page")
-    if not isinstance(active_page, int):
-        return None, None
-
-    target_count = int(plan.get("target_count", 0))
-    rendered_count = int(
-        plan.get("rendered_count", plan.get("completed_count", 0))
-    ) + 1
-    rendered_count = min(rendered_count, target_count)
-    completed_count = max(int(plan.get("completed_count", 0)), rendered_count)
-    plan["rendered_count"] = rendered_count
-    plan["completed_count"] = completed_count
-    next_page = page_at_target_index(
-        plan.get("target_page_ranges") or [],
-        rendered_count,
-    )
-    plan["active_page"] = next_page
-    return active_page, next_page
 
 
 def load_or_init_state(

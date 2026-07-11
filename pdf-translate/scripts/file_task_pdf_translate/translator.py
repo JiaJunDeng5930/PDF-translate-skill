@@ -13,6 +13,7 @@ from .editable import EditableBlock
 from .editable import normalize_extracted_pdf_text
 from .editable import placeholder_sequence
 from .state import WorkspacePaths
+from .state import active_batch_pages
 from .state import load_accepted_answer
 from .state import save_pending_task
 from .state import stable_hash
@@ -36,18 +37,21 @@ class FileTaskTranslator(BaseTranslator):
         active_page = page_plan.get("active_page")
         return active_page if isinstance(active_page, int) else None
 
-    def _task_page_from_items(self, items: list[dict]) -> int | list[int] | None:
-        active_page = self._active_page()
-        if active_page is not None:
-            return active_page
+    def _original_page(self, item: dict) -> int | None:
+        page = item.get("page")
+        if page is None:
+            page = (item.get("hygiene_context") or {}).get("page_number")
+            if isinstance(page, int):
+                page += 1
+        pages = active_batch_pages(self.state)
+        if isinstance(page, int) and 1 <= page <= len(pages):
+            return pages[page - 1]
+        return self._active_page() if page is None else page
 
+    def _task_page_from_items(self, items: list[dict]) -> int | list[int] | None:
         pages: list[int] = []
         for item in items:
-            page = item.get("page")
-            if page is None:
-                page = (item.get("hygiene_context") or {}).get("page_number")
-                if isinstance(page, int):
-                    page += 1
+            page = self._original_page(item)
             if isinstance(page, int) and page not in pages:
                 pages.append(page)
         if len(pages) == 1:
@@ -91,7 +95,6 @@ class FileTaskTranslator(BaseTranslator):
 
     def _translation_task_from_items(self, items: list[dict]) -> dict:
         task_page = self._task_page_from_items(items)
-        active_page = self._active_page()
         context_page = task_page if isinstance(task_page, int) else None
         blocks = []
         for index, item in enumerate(items):
@@ -113,7 +116,7 @@ class FileTaskTranslator(BaseTranslator):
                 "hygiene_context": context,
                 "context_before": context_before,
             }
-            page = active_page if active_page is not None else item.get("page")
+            page = self._original_page(item)
             if isinstance(page, int):
                 block["page"] = page
             blocks.append(block)

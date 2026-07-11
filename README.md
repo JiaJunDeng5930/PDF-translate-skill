@@ -113,6 +113,7 @@ lang_in: "en"
 lang_out: "zh-CN"
 asset_dir: "../pdf-translate-assets"
 pages: null
+pages_per_advance: 1
 output_mode: "mono"
 primary_font_family: null
 add_formula_placehold_hint: true
@@ -146,6 +147,11 @@ a string range such as `"1-3"` or `"4"` for page-limited runs. The generated PDF
 keeps the source document page count, and pages outside the selected range are
 preserved from the source PDF.
 
+`pages_per_advance` is a positive integer that controls how many consecutive
+selected pages one foreground `advance` may translate or assemble. It defaults
+to `1`. Larger values enable true multi-page BabelDOC batches and scale one
+command's time and peak memory with the configured batch size.
+
 ## Architecture
 
 The repository has five important layers:
@@ -163,14 +169,14 @@ pdf_translate.yaml
   -> advance.py
   -> validate local asset_dir
   -> freeze config into .pdf_translate/state.json
-  -> isolate one selected source page
-  -> run the internal PDF pipeline for that page
+  -> isolate the next configured batch of consecutive selected pages
+  -> run the internal PDF pipeline for that batch
   -> pause at term/translation task
   -> write current_translation.yaml
   -> validate accepted answer
   -> store answer patch by task hash
-  -> typeset and commit the translated page
-  -> repeat one bounded page step per advance
+  -> typeset the batch and commit validated single-page shards
+  -> repeat one configured batch step per advance
   -> publish completed PDF variants
 ```
 
