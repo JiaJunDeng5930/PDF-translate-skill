@@ -161,9 +161,26 @@ output_mode: mono
 """.lstrip()
         )
 
-        snapshot = load_workspace_config(self.tmp).snapshot
+        legacy_snapshot = load_workspace_config(self.tmp).snapshot
 
-        self.assertNotIn("pages_per_advance", snapshot)
+        self.write_config(
+            """
+input_pdf: paper.pdf
+lang_in: en
+lang_out: zh-CN
+asset_dir: assets
+pages_per_advance: 1
+output_mode: mono
+""".lstrip()
+        )
+        explicit_default_snapshot = load_workspace_config(self.tmp).snapshot
+
+        self.assertNotIn("pages_per_advance", legacy_snapshot)
+        self.assertNotIn("pages_per_advance", explicit_default_snapshot)
+        self.assertEqual(
+            explicit_default_snapshot["config_hash"],
+            legacy_snapshot["config_hash"],
+        )
 
     def test_initialized_state_keeps_runtime_sources_single_owned(self) -> None:
         from file_task_pdf_translate.config import load_workspace_config
@@ -1494,6 +1511,7 @@ add_formula_placehold_hint: true
         self.assertEqual(first["status"], "page_completed")
         self.assertEqual(first["finalized_pages"], [1, 2])
         self.assertEqual(first["finalized_page"], 2)
+        self.assertEqual(first["completed_page"], 2)
         self.assertEqual(first["next_finalization_page"], 3)
         self.assertEqual(
             first["progress"]["pipeline_progress"]["stage"],

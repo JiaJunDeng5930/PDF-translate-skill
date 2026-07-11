@@ -138,7 +138,7 @@ def _normalize_config(root: Path, data: dict) -> dict:
         "primary_font_family": primary_font_family,
         "add_formula_placehold_hint": add_formula_placehold_hint,
     }
-    if "pages_per_advance" in data:
+    if pages_per_advance != 1:
         snapshot["pages_per_advance"] = pages_per_advance
     snapshot["config_hash"] = _stable_hash(snapshot)
     return snapshot

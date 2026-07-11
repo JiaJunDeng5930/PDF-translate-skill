@@ -515,6 +515,8 @@ def _append_original_dual_page(assembled_path: Path, page_path: Path) -> None:
             0,
             keep_proportion=True,
         )
+        # PDF links are /Link annotations. This duplicates their clickable
+        # rectangles together with the other non-widget annotations.
         _duplicate_page_annotations(dual_page, output_page, width)
 
         temp_path = page_path.with_suffix(".dual-original.pdf")
@@ -708,7 +710,7 @@ def _output_pages_completed_response(
 ) -> dict:
     return {
         "status": "page_completed",
-        "completed_page": state.get("last_completed_page"),
+        "completed_page": page_numbers[-1],
         "next_page": None,
         "finalized_pages": page_numbers,
         "finalized_page": page_numbers[-1],
