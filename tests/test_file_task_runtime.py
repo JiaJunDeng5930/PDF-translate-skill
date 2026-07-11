@@ -1946,6 +1946,43 @@ add_formula_placehold_hint: true
 
         self.assertEqual(progress["accepted_tasks"], 123)
 
+    def test_state_load_recovers_interrupted_answer_counter_commit(self) -> None:
+        from file_task_pdf_translate.state import answer_path
+        from file_task_pdf_translate.state import ensure_dirs
+        from file_task_pdf_translate.state import load_or_init_state
+        from file_task_pdf_translate.state import paths_for
+        from file_task_pdf_translate.state import read_json
+        from file_task_pdf_translate.state import write_json
+
+        paths = paths_for(self.tmp)
+        ensure_dirs(paths)
+        state = {
+            "status": "needs_ai_edit",
+            "pending_task_hash": "interrupted",
+            "pending_page": [2, 3],
+            "accepted_task_count": 123,
+        }
+        write_json(paths.state, state)
+        write_json(
+            answer_path(paths, "interrupted"),
+            [{"id": 0, "output": "accepted"}],
+        )
+
+        with patch.object(
+            Path,
+            "glob",
+            side_effect=AssertionError("accepted answer directory was scanned"),
+        ):
+            recovered = load_or_init_state(paths)
+            loaded_again = load_or_init_state(paths)
+
+        self.assertEqual(recovered["accepted_task_count"], 124)
+        self.assertEqual(loaded_again["accepted_task_count"], 124)
+        self.assertEqual(recovered["status"], "running")
+        self.assertIsNone(recovered["pending_task_hash"])
+        self.assertNotIn("pending_page", recovered)
+        self.assertEqual(read_json(paths.state, {})["accepted_task_count"], 124)
+
     def test_done_progress_preserves_memory_summary(self) -> None:
         from file_task_pdf_translate.runner import _progress
         from file_task_pdf_translate.state import ensure_dirs

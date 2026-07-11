@@ -347,6 +347,7 @@ def load_or_init_state(
     ensure_dirs(paths)
     state = read_json(paths.state, None)
     if state is not None:
+        _recover_interrupted_answer_commit(paths, state)
         return state
     if config_snapshot is None:
         raise RuntimeError("config snapshot is required to initialize state")
@@ -455,6 +456,31 @@ def accepted_answer_count(paths: WorkspacePaths) -> int:
     if not paths.accepted.exists():
         return 0
     return sum(1 for _path in paths.accepted.glob("*.answer.json"))
+
+
+def _recover_interrupted_answer_commit(paths: WorkspacePaths, state: dict) -> bool:
+    task_hash = state.get("pending_task_hash")
+    if not isinstance(task_hash, str) or not answer_path(paths, task_hash).exists():
+        return False
+
+    accepted_count = state.get("accepted_task_count")
+    if isinstance(accepted_count, int):
+        accepted_count += 1
+    else:
+        accepted_count = accepted_answer_count(paths)
+    state["pending_task_hash"] = None
+    state.pop("pending_page", None)
+    state["status"] = "running"
+    state["accepted_task_count"] = accepted_count
+    state.pop("last_error", None)
+    write_json(paths.state, state)
+    append_trace(
+        paths,
+        "answer_commit_recovered",
+        task_hash=task_hash,
+        accepted_task_count=accepted_count,
+    )
+    return True
 
 
 def _new_lock_metadata(paths: WorkspacePaths, pid: int | None = None) -> dict:
